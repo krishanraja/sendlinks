@@ -25,3 +25,15 @@ insert into storage.objects (bucket_id, name, metadata) values
   ('private-stuff', 'secret.txt', '{"size": 10, "mimetype": "text/plain"}'),
   ('sendlinks', 'pulse/2026-10/0b7e/pulse-only.pdf', '{"size": 5, "mimetype": "application/pdf"}'),
   ('content-library', 'odd/R&D #3?.pdf', '{"size": 7, "mimetype": "application/pdf"}');
+
+-- pg_net: record what would have been posted.
+create schema net;
+create table net.http_requests (id bigserial primary key, url text, body jsonb, headers jsonb, timeout_milliseconds int);
+create function net.http_post(url text, body jsonb default '{}', params jsonb default '{}',
+  headers jsonb default '{}', timeout_milliseconds int default 5000) returns bigint
+language sql as $$
+  insert into net.http_requests (url, body, headers, timeout_milliseconds)
+  values (url, body, headers, timeout_milliseconds) returning id
+$$;
+-- Supabase grants execute on new public functions to these roles by default; mirror it.
+alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;

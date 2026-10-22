@@ -3,18 +3,23 @@
 Target: Supabase project `gojpffsrxybbpbdzzrvs` (Mindmaker OS, us-west-2). Each step below is a
 separate production action and needs Krish's approval at the time it runs.
 
-## 1. Apply the migration
+Status: steps 1 to 5 done on 2026-10-22 (docs/STATE.md has the readback).
 
-Apply `supabase/migrations/20261022120000_sendlinks_core.sql` (MCP `apply_migration`, name
-`sendlinks_core`, or `supabase db push`). It only creates the `sendlinks` schema, its tables and
-functions, and the pgcrypto extension if missing. It reads `public.ventures` and `storage.objects`
-and writes nothing outside `sendlinks`.
+## 1. Apply the migrations
+
+Apply `supabase/migrations/*.sql` in order through the Management API migrations endpoint
+(`POST /v1/projects/{ref}/database/migrations`, which records history itself) or `supabase db push`.
+`sendlinks_core` creates the `sendlinks` schema. `sendlinks_receipts` adds receipts, webhooks and
+nine `public.sendlinks_*` wrappers that only the service role can execute. Neither writes the
+storage schema.
 
 Readback:
 
 ```sql
 select count(*) from information_schema.tables where table_schema = 'sendlinks';      -- 4
-select count(*) from pg_proc where pronamespace = 'sendlinks'::regnamespace;          -- 11
+select count(*) from pg_proc where pronamespace = 'sendlinks'::regnamespace;          -- 16
+select count(*) from pg_proc p where pronamespace = 'public'::regnamespace and proname like 'sendlinks\_%'
+   and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'));  -- 0
 select has_schema_privilege('anon', 'sendlinks', 'usage');                            -- false
 ```
 
@@ -25,6 +30,9 @@ Readback: `select id, public, file_size_limit from storage.buckets where id = 's
 
 ## 3. Deploy the two functions without gateway JWT checks
 
+Each function ships its `index.ts` plus `_shared/sendlinks.ts` and `_shared/runtime.ts`
+(never `_shared/pg_db_test_only.ts`).
+
 Both authenticate themselves (`sendlinks-api` by bearer hash, `sendlinks-open` is public by design).
 
 ```
@@ -32,15 +40,21 @@ supabase functions deploy sendlinks-api  --project-ref gojpffsrxybbpbdzzrvs --no
 supabase functions deploy sendlinks-open --project-ref gojpffsrxybbpbdzzrvs --no-verify-jwt
 ```
 
-They use the platform-injected `SUPABASE_URL`, `SUPABASE_DB_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
+They use the platform-injected `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`, and reach the
+database only through PostgREST (D7).
 Optional secret `SENDLINKS_PUBLIC_BASE` once a short domain fronts `sendlinks-open`.
 
 ## 4. Mint a bearer per caller
 
-In the SQL editor, one per caller, scoped to the ventures it may send for:
+Done for n8n (all ventures), written straight into Vault so it never left the database:
+`select vault.create_secret(sendlinks.mint_client('n8n', null), 'sendlinks_n8n_bearer', '...')`.
+Read it in the SQL editor with
+`select decrypted_secret from vault.decrypted_secrets where name = 'sendlinks_n8n_bearer'`.
+
+For another caller, one per caller, scoped to the ventures it may send for:
 
 ```sql
-select sendlinks.mint_client('n8n', null);                       -- any active venture
+select sendlinks.mint_client('vps-agents', null);                -- any active venture
 select sendlinks.mint_client('control-center', array['mindmake']);
 ```
 

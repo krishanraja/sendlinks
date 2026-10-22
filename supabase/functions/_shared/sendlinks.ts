@@ -7,13 +7,17 @@ export interface Db {
   authenticate(bearer: string): Promise<string | null>;
   createLink(clientId: string, body: Json): Promise<Json>;
   linkStatus(clientId: string, linkId: string): Promise<Json | null>;
+  listLinks(clientId: string, filters: Json): Promise<Json>;
   revokeLink(clientId: string, linkId: string, reason: string | null): Promise<Json>;
+  setReceiptWebhook(clientId: string, url: string | null, secret: string | null): Promise<Json>;
   openLink(token: string, password: string | null, ipSha256: string | null, userAgent: string | null, consume: boolean): Promise<Json>;
   refundView(linkId: string, detail: string): Promise<void>;
+  recordDownload(linkId: string, bytes: number, complete: boolean, ipSha256: string | null, userAgent: string | null): Promise<void>;
 }
 
 export interface Storage {
-  signedUrl(bucket: string, path: string, fileName: string, ttlSeconds: number): Promise<string>;
+  // A streaming GET of the object. Throws, or returns a non-2xx Response, when it cannot.
+  fetchObject(bucket: string, path: string): Promise<Response>;
   upload(bucket: string, path: string, bytes: Uint8Array, contentType: string): Promise<void>;
   remove(bucket: string, path: string): Promise<void>;
 }
@@ -22,11 +26,12 @@ export interface Deps {
   db: Db;
   storage: Storage;
   publicBase: string; // links are `${publicBase}/${token}`
+  // Keeps the worker alive for a write that finishes after the response (EdgeRuntime.waitUntil).
+  waitUntil?: (p: Promise<unknown>) => void;
 }
 
 export const UPLOAD_BUCKET = "sendlinks";
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
-const SIGNED_URL_TTL = 60;
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -35,6 +40,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // also catch real phones (Cubot). Scanners posing as browsers are not caught here (README).
 const PREVIEW_UA_RE =
   /\b(?:google|bing|apple|duckduck|yandex|slack|twitter|linkedin|discord|telegram|pinterest|ahrefs|semrush)bot\b|\b\w+bot\/\d|\bbot\b|crawler|spider|slack-imgproxy|facebookexternalhit|facebot|whatsapp|skypeuripreview|embedly|outbrain|vkshare|googleother|headlesschrome|\bcurl\/|\bwget\//i;
+
+// Shown in the browser rather than saved. Nothing that can run script (no HTML, no SVG).
+const INLINE_TYPES = /^(application\/pdf|image\/(png|jpeg|gif|webp)|text\/plain|video\/mp4|audio\/mpeg)\b/i;
 
 const SAFE_HEADERS = {
   "Cache-Control": "no-store",
@@ -84,16 +92,47 @@ const API_ERRORS: Record<string, number> = {
 };
 
 export function makeApiHandler(deps: Deps, fnName = "sendlinks-api") {
-  return async (req: Request): Promise<Response> => {
+  return async (incoming: Request): Promise<Response> => {
+    // Take the whole body before any other I/O, so nothing downstream reads a half-consumed
+    // stream after an await.
+    const req = incoming.body
+      ? new Request(incoming.url, { method: incoming.method, headers: incoming.headers, body: await incoming.arrayBuffer() })
+      : incoming;
     const url = new URL(req.url);
     const seg = segmentsAfter(url, fnName);
     const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
     const clientId = bearer ? await deps.db.authenticate(bearer) : null;
     if (!clientId) return json(401, { ok: false, error: "unauthorized" });
 
+    if (seg[0] === "webhook" && seg.length === 1) {
+      if (req.method === "DELETE") return json(200, await deps.db.setReceiptWebhook(clientId, null, null));
+      if (req.method === "PUT") {
+        const body = await req.json().catch(() => ({})) as Json;
+        const r = await deps.db.setReceiptWebhook(
+          clientId,
+          typeof body.url === "string" ? body.url : null,
+          typeof body.secret === "string" ? body.secret : null,
+        );
+        return json(r.ok ? 200 : 400, r);
+      }
+      return json(405, { ok: false, error: "method_not_allowed" });
+    }
+
     if (seg[0] !== "links") return json(404, { ok: false, error: "not_found" });
 
-    if (req.method === "POST" && seg.length === 1) return createLink(deps, clientId, req);
+    if (seg.length === 1) {
+      if (req.method === "POST") return createLink(deps, clientId, req);
+      if (req.method === "GET") {
+        const f: Json = {};
+        for (const k of ["venture", "recipient_email", "purpose", "since", "opened", "limit"]) {
+          const v = url.searchParams.get(k);
+          if (v !== null && v !== "") f[k] = v;
+        }
+        const r = await deps.db.listLinks(clientId, f);
+        return json(r.ok ? 200 : 400, r);
+      }
+      return json(405, { ok: false, error: "method_not_allowed" });
+    }
 
     const linkId = seg[1] ?? "";
     if (!UUID_RE.test(linkId)) return json(404, { ok: false, error: "not_found" });
@@ -186,6 +225,7 @@ const OPEN_ERRORS: Record<string, [number, string]> = {
   locked: [423, "This link is locked after too many wrong passwords."],
   password_required: [401, "This link needs a password."],
   bad_password: [403, "That password is not right."],
+  unavailable: [503, "This link could not be opened just now. Try again in a minute."],
 };
 
 export function makeOpenHandler(deps: Deps, fnName = "sendlinks-open") {
@@ -220,19 +260,34 @@ export function makeOpenHandler(deps: Deps, fnName = "sendlinks-open") {
       return text(200, `${r.title}\nOpen this link in a browser to view it.\n`);
     }
 
-    // The view is already spent. If the bytes cannot be handed over, give it back so a
+    // The view is already spent. If the content cannot be handed over, give it back so a
     // read-once link survives a Storage hiccup.
-    let target: string | null = null;
-    try {
-      if (r.kind === "url") target = new URL(String(r.url)).href;
-      if (r.kind === "file") {
-        target = await deps.storage.signedUrl(String(r.bucket), String(r.path), String(r.file_name), SIGNED_URL_TTL);
-      }
-      if (target && !asJson) new Headers({ Location: target });
-    } catch (e) {
+    const refund = async (e: unknown) => {
       await deps.db.refundView(String(r.link_id), e instanceof Error ? e.message : String(e));
-      const message = "This link could not be opened just now. Try again in a minute.";
-      return asJson ? json(503, { ok: false, reason: "unavailable", message }) : text(503, message + "\n");
+      return fail("unavailable");
+    };
+
+    if (r.kind === "file") {
+      // Files always stream through here, for GET and POST alike, so the last byte leaving is
+      // what writes the download receipt.
+      let upstream: Response;
+      try {
+        upstream = await deps.storage.fetchObject(String(r.bucket), String(r.path));
+        if (!upstream.ok || !upstream.body) throw new Error(`storage answered ${upstream.status}`);
+      } catch (e) {
+        return refund(e);
+      }
+      return streamFile(deps, r, upstream, ipHash, ua);
+    }
+
+    let target: string | null = null;
+    if (r.kind === "url") {
+      try {
+        target = new URL(String(r.url)).href;
+        new Headers({ Location: target });
+      } catch (e) {
+        return refund(e);
+      }
     }
 
     if (asJson) {
@@ -241,8 +296,7 @@ export function makeOpenHandler(deps: Deps, fnName = "sendlinks-open") {
         kind: r.kind,
         title: r.title,
         message: r.message ?? null,
-        url: r.kind === "url" ? target : null,
-        download_url: r.kind === "file" ? target : null,
+        url: target,
         text: r.kind === "text" ? r.text : null,
         views: r.views,
         max_views: r.max_views ?? null,
@@ -253,4 +307,55 @@ export function makeOpenHandler(deps: Deps, fnName = "sendlinks-open") {
     const head = r.message ? `${r.title}\n\n${r.message}\n\n` : `${r.title}\n\n`;
     return text(200, head + String(r.text) + "\n");
   };
+}
+
+function streamFile(deps: Deps, r: Json, upstream: Response, ipHash: string | null, ua: string | null): Response {
+  const linkId = String(r.link_id);
+  const contentType = String(r.content_type || upstream.headers.get("content-type") || "application/octet-stream");
+  const fileName = String(r.file_name || "download");
+  const length = upstream.headers.get("content-length");
+  const reader = upstream.body!.getReader();
+  let sent = 0;
+  let settled = false;
+  const settle = (complete: boolean) => {
+    if (settled) return;
+    settled = true;
+    const write = deps.db.recordDownload(linkId, sent, complete, ipHash, ua).catch(() => {});
+    deps.waitUntil?.(write);
+  };
+
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          settle(true);
+          return;
+        }
+        sent += value.byteLength;
+        controller.enqueue(value);
+      } catch (e) {
+        settle(false);
+        controller.error(e);
+      }
+    },
+    cancel(reason) {
+      // The recipient closed the tab or lost the connection mid-file.
+      settle(false);
+      return reader.cancel(reason);
+    },
+  });
+
+  const headers: Record<string, string> = {
+    ...SAFE_HEADERS,
+    "Content-Type": contentType,
+    "Content-Disposition": `${INLINE_TYPES.test(contentType) ? "inline" : "attachment"}; filename="${fileName}"`,
+  };
+  // Chrome will not render a PDF inside a sandboxed document; everything else gets the sandbox.
+  if (!/^application\/pdf\b/i.test(contentType)) {
+    headers["Content-Security-Policy"] = "sandbox; default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'";
+  }
+  if (length) headers["Content-Length"] = length;
+  return new Response(body, { status: 200, headers });
 }

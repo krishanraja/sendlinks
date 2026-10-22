@@ -174,6 +174,37 @@ begin
 end $$;
 
 do $$
+declare
+  c uuid := (select v from t where k = 'client');
+  r jsonb;
+  s jsonb;
+  n int;
+begin
+  -- Receipts and webhooks.
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"Deck","bucket":"content-library","path":"guides/ai-readiness.pdf","recipient_email":"a@b.co","purpose":"proposal"}');
+  perform sendlinks.open_link(r->>'token');
+  perform sendlinks.record_download((r->>'link_id')::uuid, 48213, true);
+  perform sendlinks.record_download((r->>'link_id')::uuid, 100, false);
+  s := sendlinks.link_status(c, (r->>'link_id')::uuid);
+  assert (s->'receipts'->>'opened')::boolean and (s->'receipts'->>'downloads')::int = 1, 'receipts: ' || (s->'receipts')::text;
+  assert s->'events'->0->>'kind' = 'download_incomplete', 'incomplete logged: ' || (s->'events')::text;
+
+  assert (sendlinks.list_links(c, '{"purpose":"proposal"}')->'links'->0->>'link_id') = r->>'link_id', 'list by purpose';
+  assert sendlinks.list_links(c, '{"since":"nope"}')->>'error' = 'invalid', 'bad since';
+  assert jsonb_array_length(sendlinks.list_links(c, '{"opened":"false","limit":"1"}')->'links') = 1, 'limit and opened filter';
+
+  assert sendlinks.set_receipt_webhook(c, 'http://insecure.example', 'a-long-enough-secret')->>'error' = 'invalid', 'webhook must be https';
+  assert sendlinks.set_receipt_webhook(c, 'https://hook.example/x', 'short')->>'error' = 'invalid', 'webhook secret length';
+  perform sendlinks.set_receipt_webhook(c, 'https://hook.example/x', 'a-long-enough-secret');
+  select count(*) into n from net.http_requests;
+  perform sendlinks.open_link((sendlinks.create_link(c, '{"venture":"mindmake","kind":"text","title":"x","text":"y"}'))->>'token');
+  assert (select count(*) from net.http_requests) = n + 1, 'open pushed once';
+  perform sendlinks.set_receipt_webhook(c, null, null);
+  assert (select receipt_webhook_secret from sendlinks.clients where id = c) is null, 'clearing removes the secret';
+  raise notice 'ok: receipts, list, webhooks';
+end $$;
+
+do $$
 begin
   begin
     delete from sendlinks.events;
@@ -184,5 +215,11 @@ begin
   assert not has_schema_privilege('anon', 'sendlinks', 'usage'), 'anon has no schema access';
   assert not has_schema_privilege('authenticated', 'sendlinks', 'usage'), 'authenticated has no schema access';
   assert not has_function_privilege('anon', 'sendlinks.open_link(text,text,text,text,boolean)', 'execute'), 'anon cannot execute';
+  assert not exists (
+    select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname like 'sendlinks\_%'
+       and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'))
+  ), 'public wrappers are closed to anon and authenticated';
+  assert (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname like 'sendlinks\_%'
+           and has_function_privilege('service_role', p.oid, 'execute')) = 9, 'service role can call all nine wrappers';
   raise notice 'ok: append only, privileges';
 end $$;

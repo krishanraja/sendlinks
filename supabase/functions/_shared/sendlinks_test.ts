@@ -1,9 +1,10 @@
 // End to end through the HTTP handlers against a real Postgres built by tests/run-local.sh.
-// Storage is faked: uploads land in the stub storage.objects table so create_link can see them.
+// Storage is faked: uploads land in the stub storage.objects table so create_link can see them,
+// and their bytes are kept in memory so downloads can be streamed back.
 import { assert, assertEquals, assertMatch } from "jsr:@std/assert@1.0.13";
 import postgres from "npm:postgres@3.4.5";
 import { makeApiHandler, makeOpenHandler, type Storage } from "./sendlinks.ts";
-import { pgDb } from "./runtime.ts";
+import { pgDb } from "./pg_db_test_only.ts";
 
 const dbUrl = Deno.env.get("SENDLINKS_TEST_DB_URL");
 const BASE = "https://x.supabase.co/functions/v1";
@@ -17,18 +18,28 @@ Deno.test({
     const sql = postgres(dbUrl!, { max: 1 });
     const removed: string[] = [];
     let storageDown = false;
+    const objects = new Map<string, Uint8Array<ArrayBuffer>>([
+      ["content-library/guides/ai-readiness.pdf", new TextEncoder().encode("%PDF-1.7 guide")],
+    ]);
     const storage: Storage = {
-      signedUrl: (b, p, f, ttl) =>
-        storageDown
-          ? Promise.reject(new Error("storage unavailable"))
-          : Promise.resolve(`https://signed.test/${b}/${p}?download=${f}&ttl=${ttl}`),
+      fetchObject(b, p) {
+        if (storageDown) return Promise.reject(new Error("storage unavailable"));
+        const bytes = objects.get(`${b}/${p}`);
+        return Promise.resolve(bytes ? new Response(bytes.slice(), { headers: { "content-length": String(bytes.length) } }) : new Response("missing", { status: 404 }));
+      },
       async upload(b, p, bytes, ct) {
+        objects.set(`${b}/${p}`, new Uint8Array(bytes));
         await sql`insert into storage.objects (bucket_id, name, metadata)
                   values (${b}, ${p}, ${sql.json({ size: bytes.length, mimetype: ct })})`;
       },
       remove: (b, p) => (removed.push(`${b}/${p}`), Promise.resolve()),
     };
-    const deps = { db: pgDb(dbUrl!), storage, publicBase: `${BASE}/sendlinks-open` };
+    const pending: Promise<unknown>[] = [];
+    const db = pgDb(dbUrl!);
+    const deps = { db, storage, publicBase: `${BASE}/sendlinks-open`, waitUntil: (p: Promise<unknown>) => void pending.push(p) };
+    const settled = () => Promise.all(pending.splice(0));
+    const status = async (id: string) =>
+      await (await api(new Request(`${BASE}/sendlinks-api/links/${id}`, { headers: auth }))).json();
     const api = makeApiHandler(deps);
     const open = makeOpenHandler(deps);
     const [{ token: bearer }] = await sql`select sendlinks.mint_client('http-test', array['mindmake']) as token`;
@@ -90,16 +101,23 @@ Deno.test({
       urlLink = body.url;
     });
 
-    await t.step("uploads a file and serves it through a short signed url", async () => {
+    await t.step("uploads a file, streams it back inline, and writes a download receipt", async () => {
       const form = new FormData();
       form.append("meta", JSON.stringify({ venture: "mindmake", title: "Proposal", max_views: 1 }));
       form.append("file", new File([new Uint8Array([1, 2, 3])], "Mindmake proposal (v2).pdf", { type: "application/pdf" }));
       const res = await api(new Request(`${BASE}/sendlinks-api/links`, { method: "POST", headers: auth, body: form }));
       assertEquals(res.status, 201);
-      const { url } = await res.json();
+      const { url, link_id } = await res.json();
       const go = await visit(url);
-      assertEquals(go.status, 302);
-      assertMatch(go.headers.get("location")!, /^https:\/\/signed\.test\/sendlinks\/mindmake\/\d{4}-\d{2}\/[0-9a-f-]{36}\/Mindmake-proposal-v2-\.pdf\?download=Mindmake proposal \(v2\)\.pdf&ttl=60$/);
+      assertEquals(go.status, 200);
+      assertEquals(go.headers.get("content-type"), "application/pdf");
+      assertEquals(go.headers.get("content-disposition"), 'inline; filename="Mindmake proposal (v2).pdf"');
+      assertEquals(go.headers.get("content-security-policy"), null, "pdf viewers refuse a sandbox");
+      assertEquals([...new Uint8Array(await go.arrayBuffer())], [1, 2, 3]);
+      await settled();
+      const s = await status(link_id);
+      assertEquals([s.receipts.opened, s.receipts.downloaded, s.receipts.downloads], [true, true, 1]);
+      assertEquals(s.events[0].kind, "downloaded");
       const again = await visit(url);
       assertEquals(again.status, 410);
       assertMatch(await again.text(), /maximum number of times/);
@@ -175,9 +193,11 @@ Deno.test({
       await fail.body?.cancel();
       storageDown = false;
       const ok = await visit(url);
-      assertEquals(ok.status, 302);
-      const status = await (await api(new Request(`${BASE}/sendlinks-api/links/${link_id}`, { headers: auth }))).json();
-      assertEquals([status.views, status.state], [1, "exhausted"]);
+      assertEquals(ok.status, 200);
+      assertEquals(await ok.text(), "%PDF-1.7 guide");
+      await settled();
+      const s = await status(link_id);
+      assertEquals([s.views, s.state, s.receipts.downloads], [1, "exhausted", 1]);
     });
 
     await t.step("phones named like bots are browsers, real unfurlers are not", async () => {
@@ -221,6 +241,65 @@ Deno.test({
       assertEquals(removed.length, before + 1);
     });
 
+    await t.step("a download cut off mid-file is an open without a download receipt", async () => {
+      const res = await post("/links", { venture: "mindmake", kind: "file", title: "Guide", bucket: "content-library", path: "guides/ai-readiness.pdf" });
+      const { url, link_id } = await res.json();
+      const go = await visit(url);
+      const reader = go.body!.getReader();
+      await reader.read();
+      await reader.cancel("tab closed");
+      await settled();
+      const s = await status(link_id);
+      assertEquals([s.receipts.opened, s.receipts.downloaded], [true, false]);
+      assertEquals(s.events[0].kind, "download_incomplete");
+    });
+
+    await t.step("non-inline files download as attachments inside a sandbox", async () => {
+      const form = new FormData();
+      form.append("meta", JSON.stringify({ venture: "mindmake", title: "Page" }));
+      form.append("file", new File(["<script>alert(1)</script>"], "x.html", { type: "text/html" }));
+      const { url } = await (await api(new Request(`${BASE}/sendlinks-api/links`, { method: "POST", headers: auth, body: form }))).json();
+      const go = await visit(url);
+      assertEquals(go.headers.get("content-disposition"), 'attachment; filename="x.html"');
+      assertMatch(go.headers.get("content-security-policy")!, /^sandbox/);
+      await go.body?.cancel();
+      await settled();
+    });
+
+    await t.step("list links with receipts, filtered", async () => {
+      await post("/links", { venture: "mindmake", kind: "url", title: "Proposal for Acme", url: "https://a.b/p", recipient_email: "Jo@Acme.com", purpose: "proposal" });
+      const all = await (await api(new Request(`${BASE}/sendlinks-api/links?purpose=proposal`, { headers: auth }))).json();
+      assertEquals(all.links.length, 1);
+      assertEquals([all.links[0].recipient_email, all.links[0].receipts.opened], ["jo@acme.com", false]);
+      const opened = await (await api(new Request(`${BASE}/sendlinks-api/links?opened=true&limit=500`, { headers: auth }))).json();
+      assert(opened.links.length > 0 && opened.links.every((l: { receipts: { opened: boolean } }) => l.receipts.opened));
+      const bad = await api(new Request(`${BASE}/sendlinks-api/links?since=not-a-date`, { headers: auth }));
+      assertEquals(bad.status, 400);
+      await bad.body?.cancel();
+    });
+
+    await t.step("receipts are pushed to the caller's webhook", async () => {
+      const put = (body: unknown) => api(new Request(`${BASE}/sendlinks-api/webhook`, { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify(body) }));
+      const weak = await put({ url: "https://hooks.example/n8n", secret: "short" });
+      assertEquals(weak.status, 400);
+      await weak.body?.cancel();
+      const okPut = await put({ url: "https://hooks.example/n8n", secret: "a-long-enough-secret" });
+      assertEquals(okPut.status, 200);
+      await okPut.body?.cancel();
+      const res = await post("/links", { venture: "mindmake", kind: "text", title: "Hello", text: "hi", recipient_email: "sam@example.com", ref: "hook-1" });
+      const { url, link_id } = await res.json();
+      await (await visit(url)).text();
+      await (await visit(url, { headers: { "user-agent": "Slackbot 1.0" } })).text();
+      const calls = await sql`select url, body, headers from net.http_requests where body->>'link_id' = ${link_id} order by id`;
+      assertEquals(calls.length, 1, "previews and creates are not receipts");
+      assertEquals(calls[0].url, "https://hooks.example/n8n");
+      assertEquals(calls[0].headers["X-SendLinks-Secret"], "a-long-enough-secret");
+      assertEquals([calls[0].body.event, calls[0].body.ref, calls[0].body.receipts.opened], ["opened", "hook-1", true]);
+      const del = await api(new Request(`${BASE}/sendlinks-api/webhook`, { method: "DELETE", headers: auth }));
+      assertEquals(del.status, 200);
+      await del.body?.cancel();
+    });
+
     await t.step("ip is stored only as a per-link hash", async () => {
       const rows = await sql`select e.ip_sha256 from sendlinks.events e
         join sendlinks.links l on l.id = e.link_id
@@ -231,6 +310,7 @@ Deno.test({
       assertEquals((await sql`select count(*)::int as n from sendlinks.events where ip_sha256 like '%203.0.113%'`)[0].n, 0);
     });
 
+    await db.end();
     await sql.end();
   },
 });

@@ -13,7 +13,9 @@ and their approvals; SendLinks never emails anyone.
 - A link is a 43 character random token. Only its SHA-256 is stored, so a database read cannot
   produce a working link.
 - Every link expires: 7 days by default, 90 days at most.
-- Files stay in private buckets. Opening a file link returns a 60 second signed download URL.
+- Files stay in private buckets and stream through SendLinks itself, so no Storage URL ever
+  reaches the recipient and the last byte leaving is what writes the download receipt. PDFs,
+  images, plain text, mp4 and mp3 open in the browser; anything else downloads, sandboxed.
 - Optional `max_views` (1 means read once), optional password (bcrypt, locks after 10 wrong tries).
 - Chat unfurlers and scanners that name themselves (Slack, LinkedIn, WhatsApp, Googlebot, `HEAD`,
   curl) see the title only and never spend a view. Mail scanners that pose as browsers (Outlook
@@ -69,23 +71,51 @@ bucket_not_allowed | object_not_found | bad_expiry | invalid`, `413 file_size`.
 
 ### Read a link: `GET /links/{link_id}`
 
-State (`active`, `expired`, `revoked`, `exhausted`, `locked`), view count, first and last open, and
-the latest 50 events. A caller only ever sees its own links.
+State (`active`, `expired`, `revoked`, `exhausted`, `locked`), receipts, and the latest 50 events.
+A caller only ever sees its own links.
+
+```json
+"receipts": {
+  "opened": true,  "first_opened_at": "...", "last_opened_at": "...", "opens": 2,
+  "downloaded": true, "first_downloaded_at": "...", "last_downloaded_at": "...", "downloads": 1,
+  "previews": 3, "denied": 0
+}
+```
+
+- **Open receipt**: the recipient opened the link (unfurlers and named scanners excluded).
+- **Download receipt**: every byte of the file reached them. A tab closed mid-file is logged as
+  `download_incomplete` and does not count.
+- **Read receipt**: not yet. Knowing they actually spent time on it needs the recipient page,
+  which will report time on page; until then `opened` plus `downloaded` is the signal.
+
+### List links with receipts: `GET /links`
+
+Query: `venture`, `recipient_email`, `purpose`, `since` (ISO time), `opened` (`true`/`false`),
+`limit` (max 200). Newest first. `GET /links?purpose=proposal&opened=false` is the follow-up list.
+
+### Receipt webhook: `PUT /webhook` with `{"url": "https://...", "secret": "16+ chars"}`
+
+Every open, download, incomplete download and refusal on this caller's links is POSTed to the URL
+as JSON (`type: sendlinks.receipt`, `event`, `link_id`, `ref`, `recipient_email`, `receipts`, ...)
+with header `X-SendLinks-Secret: <secret>`, so an n8n Webhook node with Header Auth can check it.
+`DELETE /webhook` stops it. Delivery is fire and forget through pg_net; the stored receipts
+are the record.
 
 ### Revoke: `POST /links/{link_id}/revoke` with `{"reason": "..."}`
 
 ## Opening a link
 
-`GET {url}`: a url link redirects to its target, a file link redirects to a 60 second signed
-download, a text link returns plain text. `POST {url}` with `{"password": "..."}` returns JSON
-(`kind`, `title`, `url`, `download_url` or `text`); password links need this until the recipient
+`GET {url}`: a url link redirects to its target, a file link streams the file, a text link
+returns plain text. `POST {url}` with `{"password": "..."}` streams a file link and returns JSON
+(`kind`, `title`, `url` or `text`) for the others; password links need this until the recipient
 page exists. Refusals: `404` unknown, `410` expired, withdrawn or used up, `401` password needed,
 `403` wrong password, `423` locked, `503` try again (view refunded).
 
 ## From n8n
 
-HTTP Request node, `POST`, URL as above, header `Authorization: Bearer {{$credentials...}}`
-(store the bearer as an n8n credential, never in the node), JSON body:
+The n8n bearer (all ventures) is in Supabase Vault as `sendlinks_n8n_bearer`. Copy it once into
+an n8n **Header Auth** credential named `SendLinks` (name `Authorization`, value `Bearer <bearer>`)
+and select that credential on an HTTP Request node, `POST`, URL as above, JSON body:
 
 ```json
 {
