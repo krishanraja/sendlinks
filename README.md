@@ -15,8 +15,12 @@ and their approvals; SendLinks never emails anyone.
 - Every link expires: 7 days by default, 90 days at most.
 - Files stay in private buckets. Opening a file link returns a 60 second signed download URL.
 - Optional `max_views` (1 means read once), optional password (bcrypt, locks after 10 wrong tries).
-- Chat unfurlers and announced scanners (Slack, LinkedIn, WhatsApp, `HEAD`, curl) see the title
-  only and never spend a view.
+- Chat unfurlers and scanners that name themselves (Slack, LinkedIn, WhatsApp, Googlebot, `HEAD`,
+  curl) see the title only and never spend a view. Mail scanners that pose as browsers (Outlook
+  Safe Links, Proofpoint, Mimecast) do spend views and can see the content, so do not email a
+  `max_views: 1` link until the recipient page with a click-through exists.
+- If the content cannot be handed over (Storage error), the view is given back and the
+  recipient gets a 503 to retry.
 - Every open, denial and preview is written to an append-only event log. IPs are kept only as a
   hash salted with the token, so one visitor cannot be followed across links.
 - It is not end-to-end encrypted, unlike Bitwarden Send: the engine holds the content, so the
@@ -38,13 +42,13 @@ JSON body:
 | `title` | required | shown to the recipient and to unfurlers, up to 200 chars |
 | `url` | for `url` | https only |
 | `text` | for `text` | up to 100,000 chars |
-| `bucket`, `path` | for `file` | an object that already exists in an allowed bucket (`sendlinks`, `content-library`) |
-| `file_name` | | download name, defaults to the last path segment |
+| `bucket`, `path` | for `file` | an object that already exists in an allowed bucket: `content-library`, or `sendlinks` under this venture's prefix |
+| `file_name` | | download name, defaults to the last path segment; characters outside `A-Z a-z 0-9 space . _ ( ) -` become `-` |
 | `message` | | short note shown with text links |
 | `recipient_email`, `recipient_name` | | who it is for, so opens can be read back per person |
 | `purpose` | | e.g. `lead-magnet`, `client-delivery`, `workshop-pack` |
 | `ref` | | your idempotency key, unique per caller |
-| `on_duplicate` | | `error` (default, 409) or `reissue`: new token on the existing link, old token stops working |
+| `on_duplicate` | | `error` (default, 409) or `reissue`: new token on the existing link, old token stops working; a link that is no longer active is not reissued (409 `link_inactive`) |
 | `expires_in_hours` or `expires_at` | | default 168 hours, max 90 days |
 | `max_views` | | 1 to 100,000 |
 | `password` | | recipient must POST it (see below) |
@@ -60,7 +64,7 @@ Response `201` (or `200` on reissue):
 { "ok": true, "link_id": "8f0c...", "url": "https://.../sendlinks-open/Qm9...", "expires_at": "...", "state": "active", "reissued": false }
 ```
 
-Errors: `401 unauthorized`, `409 duplicate_ref`, `400 unknown_venture | venture_not_allowed |
+Errors: `401 unauthorized`, `409 duplicate_ref | link_inactive`, `400 unknown_venture | venture_not_allowed |
 bucket_not_allowed | object_not_found | bad_expiry | invalid`, `413 file_size`.
 
 ### Read a link: `GET /links/{link_id}`
@@ -76,7 +80,7 @@ the latest 50 events. A caller only ever sees its own links.
 download, a text link returns plain text. `POST {url}` with `{"password": "..."}` returns JSON
 (`kind`, `title`, `url`, `download_url` or `text`); password links need this until the recipient
 page exists. Refusals: `404` unknown, `410` expired, withdrawn or used up, `401` password needed,
-`403` wrong password, `423` locked.
+`403` wrong password, `423` locked, `503` try again (view refunded).
 
 ## From n8n
 

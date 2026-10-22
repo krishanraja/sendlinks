@@ -22,4 +22,6 @@ insert into public.ventures values
   ('ops', 'Operations', 'archived');
 insert into storage.objects (bucket_id, name, metadata) values
   ('content-library', 'guides/ai-readiness.pdf', '{"size": 48213, "mimetype": "application/pdf"}'),
-  ('private-stuff', 'secret.txt', '{"size": 10, "mimetype": "text/plain"}');
+  ('private-stuff', 'secret.txt', '{"size": 10, "mimetype": "text/plain"}'),
+  ('sendlinks', 'pulse/2026-10/0b7e/pulse-only.pdf', '{"size": 5, "mimetype": "application/pdf"}'),
+  ('content-library', 'odd/R&D #3?.pdf', '{"size": 7, "mimetype": "application/pdf"}');

@@ -138,6 +138,42 @@ begin
 end $$;
 
 do $$
+declare
+  c uuid := (select v from t where k = 'client');
+  r jsonb;
+  o jsonb;
+begin
+  -- Review findings, 2026-10-22.
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"x","bucket":"sendlinks","path":"pulse/2026-10/0b7e/pulse-only.pdf"}');
+  assert r->>'error' = 'object_not_found', 'another venture''s upload cannot be linked: ' || r;
+
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"x","bucket":"content-library","path":"odd/R&D #3?.pdf"}');
+  assert (select file_name from sendlinks.links where id = (r->>'link_id')::uuid) = 'R-D -3-.pdf', 'file name made url safe: ' || r;
+
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"url","title":"x","url":"http://a.b"}');
+  assert r->>'detail' = 'url must be https and at most 2048 chars', 'readable detail: ' || r;
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"url","title":"x","url":"https://例え.jp/"}');
+  assert r->>'error' = 'invalid', 'non-ascii url refused in sql: ' || r;
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"text","title":"x","url":"https://a.b"}');
+  assert r->>'detail' like 'kind must be%', 'shape detail: ' || r;
+  assert r::text !~ 'constraint|links_', 'no internal names leak: ' || r;
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"url","title":"x","url":"https://a.b","max_views":"lots"}');
+  assert r->>'detail' = 'a number, date or id field is malformed', 'cast detail: ' || r;
+
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"url","title":"x","url":"https://a.b","ref":"dead-1"}');
+  perform sendlinks.revoke_link(c, (r->>'link_id')::uuid);
+  o := sendlinks.create_link(c, '{"venture":"mindmake","kind":"url","title":"x","url":"https://a.b","ref":"dead-1","on_duplicate":"reissue"}');
+  assert o->>'error' = 'link_inactive' and o->>'detail' = 'revoked', 'dead link not reissued: ' || o;
+
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"text","title":"x","text":"y","max_views":1}');
+  o := sendlinks.open_link(r->>'token');
+  perform sendlinks.refund_view((o->>'link_id')::uuid, 'storage down');
+  assert (sendlinks.open_link(r->>'token')->>'ok')::boolean, 'refunded view can be used again';
+  assert exists (select 1 from sendlinks.events where link_id = (r->>'link_id')::uuid and kind = 'delivery_failed'), 'refund logged';
+  raise notice 'ok: review regressions';
+end $$;
+
+do $$
 begin
   begin
     delete from sendlinks.events;

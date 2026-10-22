@@ -16,8 +16,12 @@ Deno.test({
   async fn(t) {
     const sql = postgres(dbUrl!, { max: 1 });
     const removed: string[] = [];
+    let storageDown = false;
     const storage: Storage = {
-      signedUrl: (b, p, f, ttl) => Promise.resolve(`https://signed.test/${b}/${p}?download=${f}&ttl=${ttl}`),
+      signedUrl: (b, p, f, ttl) =>
+        storageDown
+          ? Promise.reject(new Error("storage unavailable"))
+          : Promise.resolve(`https://signed.test/${b}/${p}?download=${f}&ttl=${ttl}`),
       async upload(b, p, bytes, ct) {
         await sql`insert into storage.objects (bucket_id, name, metadata)
                   values (${b}, ${p}, ${sql.json({ size: bytes.length, mimetype: ct })})`;
@@ -149,6 +153,72 @@ Deno.test({
       const bad = await api(new Request(`${BASE}/sendlinks-api/links`, { method: "POST", headers: auth, body: "[1]" }));
       assertEquals(bad.status, 400);
       await bad.body?.cancel();
+    });
+
+    await t.step("idn urls are stored in redirectable form", async () => {
+      const res = await post("/links", { venture: "mindmake", kind: "url", title: "x", url: "https://例え.jp/パス", max_views: 1 });
+      assertEquals(res.status, 201);
+      const go = await visit((await res.json()).url);
+      assertEquals(go.status, 302);
+      assertEquals(go.headers.get("location"), "https://xn--r8jz45g.jp/%E3%83%91%E3%82%B9");
+    });
+
+    await t.step("a storage failure refunds the view", async () => {
+      const res = await post("/links", {
+        venture: "mindmake", kind: "file", title: "Guide", bucket: "content-library",
+        path: "guides/ai-readiness.pdf", max_views: 1,
+      });
+      const { url, link_id } = await res.json();
+      storageDown = true;
+      const fail = await visit(url);
+      assertEquals(fail.status, 503);
+      await fail.body?.cancel();
+      storageDown = false;
+      const ok = await visit(url);
+      assertEquals(ok.status, 302);
+      const status = await (await api(new Request(`${BASE}/sendlinks-api/links/${link_id}`, { headers: auth }))).json();
+      assertEquals([status.views, status.state], [1, "exhausted"]);
+    });
+
+    await t.step("phones named like bots are browsers, real unfurlers are not", async () => {
+      const res = await post("/links", { venture: "mindmake", kind: "text", title: "T", text: "body" });
+      const { url } = await res.json();
+      const cubot = "Mozilla/5.0 (Linux; Android 10; CUBOT_X30) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36";
+      assertMatch(await (await visit(url, { headers: { "user-agent": cubot } })).text(), /body/);
+      for (const ua of ["Googlebot/2.1 (+http://www.google.com/bot.html)", "LinkedInBot/1.0", "WhatsApp/2.23", "facebookexternalhit/1.1", "curl/8.4.0", "SomeNewBot/3.1"]) {
+        const r = await visit(url, { headers: { "user-agent": ua } });
+        assertEquals(await r.text(), "T\nOpen this link in a browser to view it.\n", ua);
+      }
+    });
+
+    await t.step("concurrent creates with one ref: one wins, the other is a duplicate", async () => {
+      const body = { venture: "mindmake", kind: "url", title: "x", url: "https://a.b", ref: "race-1" };
+      const [{ id: clientId }] = await sql`select id from sendlinks.clients where name = 'http-test'`;
+      let second: Promise<Response> | null = null;
+      await sql.begin(async (tx) => {
+        await tx`select sendlinks.create_link(${clientId}::uuid, ${tx.json(body)})`;
+        second = post("/links", body); // blocks on the unique index until this commits
+        await new Promise((r) => setTimeout(r, 200));
+      });
+      const res = await second!;
+      assertEquals(res.status, 409);
+      assertEquals((await res.json()).error, "duplicate_ref");
+    });
+
+    await t.step("an upload sent as a reissue is not orphaned", async () => {
+      const form = () => {
+        const f = new FormData();
+        f.append("meta", JSON.stringify({ venture: "mindmake", title: "Pack", ref: "pack-1", on_duplicate: "reissue" }));
+        f.append("file", new File(["zip"], "pack.zip", { type: "application/zip" }));
+        return f;
+      };
+      const send = () => api(new Request(`${BASE}/sendlinks-api/links`, { method: "POST", headers: auth, body: form() }));
+      assertEquals((await send()).status, 201);
+      const before = removed.length;
+      const again = await send();
+      assertEquals(again.status, 200);
+      await again.body?.cancel();
+      assertEquals(removed.length, before + 1);
     });
 
     await t.step("ip is stored only as a per-link hash", async () => {

@@ -48,11 +48,11 @@ create table sendlinks.links (
   kind                   text not null check (kind in ('file', 'url', 'text')),
   title                  text not null check (char_length(title) between 1 and 200),
   message                text check (char_length(message) <= 2000),
-  target_url             text check (target_url ~ '^https://[^\s]+$' and char_length(target_url) <= 2048),
+  target_url             text check (target_url ~ '^https://[!-~]+$' and char_length(target_url) <= 2048),
   text_body              text check (char_length(text_body) <= 100000),
   storage_bucket         text references sendlinks.allowed_buckets(bucket),
   storage_path           text check (storage_path !~ '(^/|\.\.)'),
-  file_name              text check (char_length(file_name) <= 255),
+  file_name              text check (file_name ~ '^[A-Za-z0-9 ._()-]{1,255}$'),
   content_type           text,
   bytes                  bigint,
   recipient_email        text check (recipient_email ~ '^[^@\s]+@[^@\s]+\.[^@\s]+$'),
@@ -89,7 +89,7 @@ create table sendlinks.events (
   kind        text not null check (kind in (
                 'created', 'reissued', 'opened', 'previewed', 'revoked',
                 'denied_expired', 'denied_revoked', 'denied_exhausted',
-                'denied_password', 'denied_locked', 'password_required')),
+                'denied_password', 'denied_locked', 'password_required', 'delivery_failed')),
   at          timestamptz not null default now(),
   ip_sha256   text,
   user_agent  text,
@@ -182,6 +182,8 @@ declare
   v_path       text := p->>'path';
   v_bytes      bigint;
   v_ctype      text := p->>'content_type';
+  v_constraint text;
+  v_column     text;
 begin
   v_bytes := (p->>'bytes')::bigint;
   select * into v_client from sendlinks.clients where id = p_client_id and revoked_at is null;
@@ -203,13 +205,16 @@ begin
       if coalesce(p->>'on_duplicate', 'error') <> 'reissue' then
         return jsonb_build_object('ok', false, 'error', 'duplicate_ref', 'link_id', v_existing.id);
       end if;
+      if sendlinks.link_state(v_existing) <> 'active' then
+        return jsonb_build_object('ok', false, 'error', 'link_inactive', 'link_id', v_existing.id,
+          'detail', sendlinks.link_state(v_existing));
+      end if;
       -- Retry after a lost response: rotate the token on the existing link. The old token dies.
       update sendlinks.links set token_sha256 = sendlinks.sha256_hex(v_token)
        where id = v_existing.id;
       insert into sendlinks.events (link_id, kind) values (v_existing.id, 'reissued');
       return jsonb_build_object('ok', true, 'link_id', v_existing.id, 'token', v_token,
-        'expires_at', v_existing.expires_at, 'state', sendlinks.link_state(v_existing),
-        'reissued', true);
+        'expires_at', v_existing.expires_at, 'state', 'active', 'reissued', true);
     end if;
   end if;
 
@@ -226,6 +231,11 @@ begin
   if v_kind = 'file' then
     if not exists (select 1 from sendlinks.allowed_buckets where bucket = v_bucket) then
       return jsonb_build_object('ok', false, 'error', 'bucket_not_allowed', 'detail', v_bucket);
+    end if;
+    -- API uploads are filed under their venture; a caller may only link its own venture's.
+    if v_bucket = 'sendlinks' and coalesce(v_path, '') not like v_venture || '/%' then
+      return jsonb_build_object('ok', false, 'error', 'object_not_found',
+        'detail', v_bucket || '/' || coalesce(v_path, ''));
     end if;
     select coalesce(v_bytes, (o.metadata->>'size')::bigint),
            coalesce(v_ctype, o.metadata->>'mimetype')
@@ -247,7 +257,9 @@ begin
       p->>'url', p->>'text',
       case when v_kind = 'file' then v_bucket end,
       case when v_kind = 'file' then v_path end,
-      case when v_kind = 'file' then coalesce(p->>'file_name', regexp_replace(v_path, '^.*/', '')) end,
+      case when v_kind = 'file' then left(regexp_replace(
+             coalesce(nullif(p->>'file_name', ''), regexp_replace(v_path, '^.*/', '')),
+             '[^A-Za-z0-9 ._()-]+', '-', 'g'), 255) end,
       case when v_kind = 'file' then v_ctype end,
       case when v_kind = 'file' then v_bytes end,
       lower(p->>'recipient_email'), p->>'recipient_name', p->>'purpose', v_ref,
@@ -256,8 +268,20 @@ begin
       (p->>'max_views')::int, v_expires, coalesce(p->'metadata', '{}'::jsonb))
     returning id into v_link_id;
   exception
-    when check_violation or not_null_violation or invalid_text_representation then
-      return jsonb_build_object('ok', false, 'error', 'invalid', 'detail', sqlerrm);
+    when unique_violation then
+      -- A concurrent request with the same ref won the insert. Answer as its duplicate.
+      if v_ref is null then raise; end if;
+      return sendlinks.create_link(p_client_id, p);
+    when check_violation or not_null_violation then
+      get stacked diagnostics v_constraint = constraint_name, v_column = column_name;
+      return jsonb_build_object('ok', false, 'error', 'invalid', 'detail', case
+        when v_constraint = 'links_kind_shape' then
+          'kind must be url, text or file, with url, text, or bucket and path to match'
+        when v_constraint = 'links_target_url_check' then 'url must be https and at most 2048 chars'
+        when v_constraint like 'links\_%\_check' then
+          regexp_replace(v_constraint, '^links_(.*)_check$', '\1') || ' is out of range'
+        when v_column is not null then v_column || ' is required'
+        else 'request is not valid' end);
   end;
 
   insert into sendlinks.events (link_id, kind, detail)
@@ -268,7 +292,8 @@ begin
 exception
   when invalid_text_representation or invalid_datetime_format or datetime_field_overflow
     or numeric_value_out_of_range then
-    return jsonb_build_object('ok', false, 'error', 'invalid', 'detail', sqlerrm);
+    return jsonb_build_object('ok', false, 'error', 'invalid',
+      'detail', 'a number, date or id field is malformed');
 end $$;
 
 create function sendlinks.link_status(p_client_id uuid, p_link_id uuid) returns jsonb
@@ -381,6 +406,15 @@ begin
     'bucket', v_link.storage_bucket, 'path', v_link.storage_path,
     'file_name', v_link.file_name, 'content_type', v_link.content_type, 'bytes', v_link.bytes,
     'views', v_link.view_count, 'max_views', v_link.max_views, 'expires_at', v_link.expires_at);
+end $$;
+
+-- The view was spent but the bytes never left (Storage error, bad redirect): give it back.
+create function sendlinks.refund_view(p_link_id uuid, p_detail text default null) returns void
+language plpgsql volatile security definer set search_path = '' as $$
+begin
+  update sendlinks.links set view_count = greatest(view_count - 1, 0) where id = p_link_id;
+  insert into sendlinks.events (link_id, kind, detail)
+  values (p_link_id, 'delivery_failed', jsonb_build_object('detail', left(p_detail, 300)));
 end $$;
 
 revoke all on all functions in schema sendlinks from public;

@@ -36,3 +36,12 @@ Vercel, and it is a material visual surface that needs a rendered mock and Krish
 The first slice therefore redirects url and file links straight to their target, returns text
 links as plain text, and takes passwords by POST. Previews never spend views, which keeps scanners
 from burning read-once links that announce themselves.
+
+## D6 2026-10-22: Fixes from the independent review
+
+No critical findings. Fixed: a view spent before delivery failed (IDN urls are stored punycoded;
+a Storage error refunds the view and returns 503); uploads are scoped to their venture's prefix;
+the unfurler pattern no longer catches phones like Cubot; a ref race returns 409 instead of 500;
+dead links are not reissued and reissued uploads are removed; download names are restricted to a
+safe character set; error details no longer expose constraint names. Accepted risk: mail
+scanners posing as browsers spend views until the recipient page adds a click-through (D5).

@@ -16,8 +16,9 @@ Engine slice built and tested locally. Nothing is deployed.
 
 | | status | evidence |
 |---|---|---|
-| Schema and SQL engine | built, tested locally | `tests/run-local.sh`: 7 SQL suites pass |
-| `sendlinks-api`, `sendlinks-open` | built, tested locally | 11 HTTP steps pass against the same database; `deno check` clean |
+| Schema and SQL engine | built, tested locally | `tests/run-local.sh`: 8 SQL suites pass |
+| `sendlinks-api`, `sendlinks-open` | built, tested locally | 16 HTTP steps pass against the same database; `deno check` clean |
+| Independent review | done, 7 findings fixed | D6; one regression test per finding |
 | Migration on Mindmaker OS | not applied | needs approval, docs/DEPLOY.md step 1 |
 | `sendlinks` bucket | not created | step 2 |
 | Functions deployed | no | step 3 |
@@ -30,6 +31,7 @@ Engine slice built and tested locally. Nothing is deployed.
 - Project `gojpffsrxybbpbdzzrvs` "Mindmaker OS", Postgres 17, database 750 MB.
 - `public.ventures.id` is text; active: circle, full-time, heartside, legibility, mindmake, mm-ctrl,
   publication, pulse, signal-noise.
+- `postgres` has BYPASSRLS and SELECT on `storage.objects`, so file links resolve when deployed.
 - Private buckets include `content-library`; `skill-deliveries` is public and its zip links never
   expire. That flow is the first candidate to move onto SendLinks.
 

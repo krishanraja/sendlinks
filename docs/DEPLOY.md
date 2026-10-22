@@ -14,7 +14,7 @@ Readback:
 
 ```sql
 select count(*) from information_schema.tables where table_schema = 'sendlinks';      -- 4
-select count(*) from pg_proc where pronamespace = 'sendlinks'::regnamespace;          -- 10
+select count(*) from pg_proc where pronamespace = 'sendlinks'::regnamespace;          -- 11
 select has_schema_privilege('anon', 'sendlinks', 'usage');                            -- false
 ```
 
@@ -49,9 +49,11 @@ Vercel env). Revoke with `update sendlinks.clients set revoked_at = now() where 
 
 ## 5. Canary
 
-With a canary bearer: create a `text` link with `max_views: 1`, open it once (200), open it again
+With a canary bearer: create a `text` link with `max_views: 1`, open it once (200; from curl pass a
+browser `-A` user agent or use POST, since curl counts as a preview), open it again
 (410), read `GET /links/{id}` (state `exhausted`, events `created`, `opened`, `denied_exhausted`),
-then revoke the canary client.
+create one `content-library` file link and open it (302 to a signed URL that downloads), then
+revoke the canary client.
 
 ## Rollback
 

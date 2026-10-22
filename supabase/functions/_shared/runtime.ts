@@ -17,6 +17,9 @@ export function pgDb(dbUrl: string): Db {
       (await one(sql`select sendlinks.revoke_link(${clientId}::uuid, ${linkId}::uuid, ${reason}) as r`)) as Json,
     openLink: async (token, password, ipSha256, userAgent, consume) =>
       (await one(sql`select sendlinks.open_link(${token}, ${password}, ${ipSha256}, ${userAgent}, ${consume}) as r`)) as Json,
+    refundView: async (linkId, detail) => {
+      await sql`select sendlinks.refund_view(${linkId}::uuid, ${detail})`;
+    },
   };
 }
 

@@ -9,6 +9,7 @@ export interface Db {
   linkStatus(clientId: string, linkId: string): Promise<Json | null>;
   revokeLink(clientId: string, linkId: string, reason: string | null): Promise<Json>;
   openLink(token: string, password: string | null, ipSha256: string | null, userAgent: string | null, consume: boolean): Promise<Json>;
+  refundView(linkId: string, detail: string): Promise<void>;
 }
 
 export interface Storage {
@@ -30,9 +31,10 @@ const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Link unfurlers and scanners that say who they are. They see the title, never the content,
-// and never spend a view.
+// and never spend a view. Named or `Somethingbot/1.0` style only: a bare "bot" substring would
+// also catch real phones (Cubot). Scanners posing as browsers are not caught here (README).
 const PREVIEW_UA_RE =
-  /bot\b|crawler|spider|slack|facebookexternalhit|twitterbot|linkedinbot|discord|whatsapp|telegram|skypeuripreview|embedly|preview|outbrain|pinterest|vkshare|googleother|headlesschrome|curl\/|wget\//i;
+  /\b(?:google|bing|apple|duckduck|yandex|slack|twitter|linkedin|discord|telegram|pinterest|ahrefs|semrush)bot\b|\b\w+bot\/\d|\bbot\b|crawler|spider|slack-imgproxy|facebookexternalhit|facebot|whatsapp|skypeuripreview|embedly|outbrain|vkshare|googleother|headlesschrome|\bcurl\/|\bwget\//i;
 
 const SAFE_HEADERS = {
   "Cache-Control": "no-store",
@@ -77,6 +79,7 @@ function safeFileName(name: string): string {
 const API_ERRORS: Record<string, number> = {
   unauthorized: 401,
   duplicate_ref: 409,
+  link_inactive: 409,
   not_found: 404,
 };
 
@@ -154,11 +157,21 @@ async function createLink(deps: Deps, clientId: string, req: Request): Promise<R
     body = parsed as Json;
   }
 
-  const r = await deps.db.createLink(clientId, body);
-  if (!r.ok) {
-    if (uploaded) await deps.storage.remove(uploaded.bucket, uploaded.path).catch(() => {});
-    return json(API_ERRORS[String(r.error)] ?? 400, r);
+  // Store the browser-safe form: IDN hosts to punycode, non-ASCII percent-encoded, so the
+  // redirect header can always be built. Anything not https is left for the database to refuse.
+  if (typeof body.url === "string") {
+    try {
+      const u = new URL(body.url);
+      if (u.protocol === "https:") body = { ...body, url: u.href };
+    } catch { /* refused as invalid below */ }
   }
+
+  const r = await deps.db.createLink(clientId, body);
+  // A refused or reissued link never points at this upload, so it would be orphaned.
+  if (uploaded && (!r.ok || r.reissued)) {
+    await deps.storage.remove(uploaded.bucket, uploaded.path).catch(() => {});
+  }
+  if (!r.ok) return json(API_ERRORS[String(r.error)] ?? 400, r);
   const { token, ...rest } = r;
   return json(r.reissued ? 200 : 201, { ...rest, url: `${deps.publicBase}/${token}` });
 }
@@ -207,10 +220,19 @@ export function makeOpenHandler(deps: Deps, fnName = "sendlinks-open") {
       return text(200, `${r.title}\nOpen this link in a browser to view it.\n`);
     }
 
+    // The view is already spent. If the bytes cannot be handed over, give it back so a
+    // read-once link survives a Storage hiccup.
     let target: string | null = null;
-    if (r.kind === "url") target = String(r.url);
-    if (r.kind === "file") {
-      target = await deps.storage.signedUrl(String(r.bucket), String(r.path), String(r.file_name), SIGNED_URL_TTL);
+    try {
+      if (r.kind === "url") target = new URL(String(r.url)).href;
+      if (r.kind === "file") {
+        target = await deps.storage.signedUrl(String(r.bucket), String(r.path), String(r.file_name), SIGNED_URL_TTL);
+      }
+      if (target && !asJson) new Headers({ Location: target });
+    } catch (e) {
+      await deps.db.refundView(String(r.link_id), e instanceof Error ? e.message : String(e));
+      const message = "This link could not be opened just now. Try again in a minute.";
+      return asJson ? json(503, { ok: false, reason: "unavailable", message }) : text(503, message + "\n");
     }
 
     if (asJson) {
