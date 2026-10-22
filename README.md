@@ -113,9 +113,9 @@ page exists. Refusals: `404` unknown, `410` expired, withdrawn or used up, `401`
 
 ## From n8n
 
-The n8n bearer (all ventures) is in Supabase Vault as `sendlinks_n8n_bearer`. Copy it once into
-an n8n **Header Auth** credential named `SendLinks` (name `Authorization`, value `Bearer <bearer>`)
-and select that credential on an HTTP Request node, `POST`, URL as above, JSON body:
+The n8n bearer (all ventures) is in Supabase Vault as `sendlinks_n8n_bearer` and already in n8n as
+the **Header Auth** credential `SendLinks`, which only sends to the SendLinks domain. Select that
+credential on an HTTP Request node, `POST`, URL as above, JSON body:
 
 ```json
 {
