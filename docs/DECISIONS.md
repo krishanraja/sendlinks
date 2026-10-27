@@ -19,6 +19,10 @@ signed URLs, expiry and view limits. Revisit if a human ever sends secrets throu
 
 ## D3 2026-10-22: Own schema, rules in SQL, functions over SUPABASE_DB_URL
 
+Status: the connection half is superseded by D7. The functions reach Postgres through PostgREST
+wrappers, not `SUPABASE_DB_URL`; only the local test harness still connects directly. The own
+schema and the rules in SQL stand. (Marked 2026-10-27; the entry below is unchanged.)
+
 Follows the `lozatron` and `compound` pattern. Every rule (validation, scoping, idempotency, view
 counting, password lockout) is a `sendlinks.*` SQL function, so it is testable in plain Postgres
 and atomic under `for update`. The edge functions connect over `SUPABASE_DB_URL`, so the schema

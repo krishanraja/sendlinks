@@ -30,8 +30,9 @@ Readback: `select id, public, file_size_limit from storage.buckets where id = 's
 
 ## 3. Deploy the two functions without gateway JWT checks
 
-Each function ships its `index.ts` plus `_shared/sendlinks.ts` and `_shared/runtime.ts`
-(never `_shared/pg_db_test_only.ts`).
+Each function ships its `index.ts` plus `supabase/functions/_shared/sendlinks.ts` and
+`supabase/functions/_shared/runtime.ts` (never `supabase/functions/_shared/pg_db_test_only.ts`,
+which only the local tests import).
 
 Both authenticate themselves (`sendlinks-api` by bearer hash, `sendlinks-open` is public by design).
 
@@ -66,8 +67,9 @@ Vercel env). Revoke with `update sendlinks.clients set revoked_at = now() where 
 With a canary bearer: create a `text` link with `max_views: 1`, open it once (200; from curl pass a
 browser `-A` user agent or use POST, since curl counts as a preview), open it again
 (410), read `GET /links/{id}` (state `exhausted`, events `created`, `opened`, `denied_exhausted`),
-create one `content-library` file link and open it (302 to a signed URL that downloads), then
-revoke the canary client.
+create one `content-library` file link and open it (200, the file streams through `sendlinks-open`
+and a `downloaded` event is written once the last byte has gone; no Storage URL reaches the
+caller), then revoke the canary client.
 
 ## Rollback
 
