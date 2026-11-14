@@ -22,6 +22,7 @@ SendLinks: expiring, revocable, view-limited links to a file, text or url, made 
 ```sh
 bash scripts/check-no-secrets.sh   # what CI runs on every push and pull request
 bash tests/run-local.sh            # needs a local Postgres and Deno: SQL suites, then the handler tests
+deno check supabase/functions/*/index.ts && deno lint supabase/functions/   # the edge functions, before a deploy
 ```
 
 ## Close out

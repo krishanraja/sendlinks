@@ -12,6 +12,9 @@ stack) and extracting the Send module in .NET. No Bitwarden code or marks are us
 
 ## D2 2026-10-22: No end-to-end encryption
 
+Status: the "60 second signed URLs" below are superseded by D8: files stream through `sendlinks-open`
+and no Storage URL reaches the recipient. The rest of D2 stands. (Marked 2026-11-14; the entry below is unchanged.)
+
 Bitwarden Send encrypts in the sender's client and keeps the key in the URL fragment. Here the
 sender is the engine, which already holds the plaintext, so client-side encryption would protect
 nothing. Protection is an unguessable token stored only as a hash, private buckets, 60 second
