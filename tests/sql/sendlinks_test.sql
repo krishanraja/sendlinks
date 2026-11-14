@@ -224,7 +224,7 @@ begin
   raise notice 'ok: append only, privileges';
 end $$;
 
--- Byte ranges (20261114130000_sendlinks_ranges): a later piece of a file spends nothing, and only
+-- Byte ranges (20261114123717_sendlinks_ranges): a later piece of a file spends nothing, and only
 -- the viewer who spent a view in the last 30 minutes gets it. Read-once and password links are
 -- never continued.
 do $$
