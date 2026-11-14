@@ -265,7 +265,7 @@ Deno.test({
       assertEquals(s.events[0].kind, "download_incomplete");
     });
 
-    await t.step("a video plays in pieces: the first piece spends a view, later ones only for that viewer", async () => {
+    await t.step("a video plays in pieces: the first piece spends a view, later ones for the next 30 minutes, from any address or player", async () => {
       const video = new Uint8Array(4096).map((_, i) => i % 251);
       const form = new FormData();
       form.append("meta", JSON.stringify({ venture: "mindmake", title: "Cut", max_views: 3 }));
@@ -294,14 +294,25 @@ Deno.test({
       s = await status(link_id);
       assertEquals([s.views, s.receipts.downloads], [1, 1]);
 
-      const otherIp = await visit(url, { headers: { ...phone, "x-forwarded-for": "198.51.100.8", range: "bytes=2048-" } });
-      assertEquals(otherIp.status, 403);
+      // The phone's player comes back from a new address and, on iPhone, as AppleCoreMedia.
+      const otherIp = await visit(url, { headers: { ...phone, "x-forwarded-for": "2001:db8::7", range: "bytes=2048-" } });
+      assertEquals(otherIp.status, 206);
       await otherIp.body?.cancel();
-      const otherAgent = await visit(url, { headers: { ...phone, "user-agent": "Mozilla/5.0 (Linux; Android 15; Pixel 9)", range: "bytes=2048-" } });
-      assertEquals(otherAgent.status, 403);
-      await otherAgent.body?.cancel();
+      const coreMedia = await visit(url, { headers: { "user-agent": "AppleCoreMedia/1.0.0.22A3354 (iPhone; U; CPU OS 18_0 like Mac OS X; en_us)", "x-forwarded-for": "198.51.100.8", range: "bytes=1024-" } });
+      assertEquals(coreMedia.status, 206);
+      assertEquals(coreMedia.headers.get("content-range"), "bytes 1024-4095/4096");
+      await coreMedia.body?.cancel();
       s = await status(link_id);
       assertEquals(s.views, 1);
+
+      // A link nobody has opened gives out no piece past the start.
+      const form2 = new FormData();
+      form2.append("meta", JSON.stringify({ venture: "mindmake", title: "Unopened" }));
+      form2.append("file", new File([video], "unopened.mp4", { type: "video/mp4" }));
+      const fresh = await (await api(new Request(`${BASE}/sendlinks-api/links`, { method: "POST", headers: auth, body: form2 }))).json();
+      const cold = await visit(fresh.url, { headers: { ...phone, range: "bytes=2048-" } });
+      assertEquals(cold.status, 403);
+      await cold.body?.cancel();
     });
 
     await t.step("a read-once file ignores ranges: whole file, one spend, then gone", async () => {
