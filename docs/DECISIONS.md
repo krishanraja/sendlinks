@@ -93,4 +93,5 @@ deleted that way would orphan the bytes anyway. `sendlinks.sweep_expired_uploads
 picks (only the `sendlinks` bucket, only objects whose every link's expiry has passed, never an
 object with no link), records the sweep on each link, and returns the paths; the operator removes
 them through the Storage API and a second dry run must list nothing. A revoked link whose expiry
-is still ahead keeps its file until then, so a mistaken revoke stays recoverable by reissue.
+is still ahead keeps its file until that expiry passes: the rule is every link expired, not
+merely dead.
