@@ -2,7 +2,7 @@
 
 The one current-truth file for SendLinks. Updated at every phase change.
 
-Updated: 2026-11-14 (wave S3: sent marks, sweep, recipient mock, phone link)
+Updated: 2026-11-14 (wave S3: sent marks, sweep run, bearers narrowed and revoked, phone range fix)
 
 ## Outcome
 
@@ -23,14 +23,14 @@ Live on Mindmaker OS. Control Center is the main caller. Recipient page: mock wa
 | Receipt webhooks | live | pg_net delivered 4 POSTs for 2 canary links (open and download each) |
 | `sendlinks` bucket | live | private, 26214400 byte limit |
 | Sent marks: a link's life counts from the send (I-28, D19) | live 2026-11-14 | migration `20261114171820_sendlinks_sent` in history (19 functions, 12 wrappers, none open to anon or signed-in users, read live); `POST /links/{id}/sent`, first call wins, dead links stay dead. Local tests: 11 SQL blocks, 24 HTTP steps; a mutation dropping the first-call guard fails the suite (PR #7). The Control Center half (marking sends from the push's SendLinks step) is not built: control-center could not be attached to this session |
-| Bearers | `n8n` and `control-center`, both all ventures (`ventures` null) | `n8n`: in Vault as `sendlinks_n8n_bearer`; proven by creating and revoking a Pulse link. `control-center`: minted 2026-10-23, used by Control Center as `SENDLINKS_BEARER`; made its first file links 2026-11-13, last used 2026-11-14 (`sendlinks.clients`, read 2026-11-14). Canary bearers revoked |
+| Bearers | `control-center` scoped to `{mindmake}`; `n8n` revoked (both 2026-11-14, on Krish's approval) | `control-center` had made only Mindmake links (5 of 5); after the change `ventures` reads `{mindmake}`, it is still active, and Control Center's `read_send_link` still reads its link. `n8n` was last used 2026-10-22 and had one link; after `revoked_at` was set, its Vault bearer no longer authenticates. Its n8n credential `SendLinks` is now dead and can be deleted in n8n. Canary bearers revoked |
 | Control Center caller | live | `api/_sendLinks.ts` creates asset links for growth-mindmake emails (venture `mindmake`); the harness connector tools `make_send_link` and `read_send_link` (`api/harness/_sendlinks-mcp.ts`) mint a file link and read its opens back. Same routes, fields and bearer as `sendlinks-api` |
 | n8n credential | live | `SendLinks` (httpHeaderAuth, id `SNBwrviRkkamYMfN`), restricted to the project's own host (`$SUPABASE_URL`); bearer copied Vault to n8n without leaving the shell; listed back through the n8n MCP |
 | DEL-002 standard | active in `standards_registry`, scope all, pre-check | inferred: reaches agents in the next nightly digest (renderer `regenerate-standards-digest.py` on the VPS, not readable from here) |
 | Local tests | pass | `tests/run-local.sh`: 10 SQL suites, 23 HTTP steps since the byte ranges (9 and 20 before); `deno check` and `deno lint` clean |
-| Live phone check of an mp4 link (inline playback, seeking, time to first frame) | waiting on Krish's phones | link minted 2026-11-14 through Control Center's `make_send_link` (link `2b99f43a-133b-4cb7-943d-89cfc2a35557`, Mindmake, a 1,589,435 byte mp4 from his Drive, no view limit or password so ranges apply, open until 2026-11-21); state active, 0 views, a HEAD preview answers 200. Result: iPhone not yet, Android not yet |
+| Live phone check of an mp4 link (inline playback, seeking, time to first frame) | Android failed, fixed, retest waiting on Krish | Android Chrome, 2026-11-14 17:48 UTC: broken video. Two views spent, 73,728 bytes read, then every later range refused 403, because continuations were bound to one ip hash and user agent. Fixed by migration `20261114175146_sendlinks_ranges_any_viewer` (PR #11): any open of the link in the last 30 minutes lets later pieces through. Live replay after it: later ranges 206 with identical bytes, including the iPhone player's AppleCoreMedia agent; first byte 1.1 s. Link `2b99f43a-133b-4cb7-943d-89cfc2a35557` (opens include 5 of mine from the replay). Result: iPhone not yet, Android retest not yet |
 | Recipient page (branded, password form, read receipts) | mock waiting on Krish (I-29, D20) | `web/mock/recipient-page.html`, Mindmake only, light and dark, states ready, password and closed; six renders in `web/mock/renders/` (PR #9). Not deployed, not wired |
-| Expired upload sweep (2.6) | built, not applied | `sendlinks.sweep_expired_uploads(p_dry_run default true)` and tests (PR #8). Applying it stopped: the Supabase connector asked a confirmation question that got no answer. Read-only dry run with the same rule (2026-11-14): 18 of 21 objects in `sendlinks`, 614 bytes, all from the 2026-10-22 canary; kept: the two one-pager PDFs and the phone-check video. Nothing deleted |
+| Expired upload sweep (2.6) | run 2026-11-14 on Krish's approval | migration `20261114175147_sendlinks_sweep` (PR #8). Dry run 18 files, 614 bytes, all 2026-10-22 canary; the real run marked 18 links (18 `upload_swept` events); the Storage API removed 18 objects; a second dry run lists 0. Kept: the two one-pager PDFs and the phone-check video (3 objects left in `sendlinks`) |
 
 ## Live facts (read 2026-10-22)
 
@@ -46,15 +46,8 @@ Live on Mindmaker OS. Control Center is the main caller. Recipient page: mock wa
 1. Rotate the n8n API key that was pasted into chat on 2026-10-22 (n8n Settings, API). It created
    the `SendLinks` credential and is no longer needed by SendLinks; the credential keeps working
    after rotation.
-2. Control Center's bearer is all ventures. Ready to narrow, not done (it is a permission change
-   and this session could not read Krish's written yes): every link it has made is `mindmake`
-   (5 links, read 2026-11-14), so `update sendlinks.clients set ventures = '{mindmake}' where name
-   = 'control-center'` matches what it mints today; read back with one `make_send_link` call.
-3. The `n8n` bearer is unused: last used 2026-10-22 (the Pulse proof link, its only link), and
-   `authenticate` stamps `last_used_at` on every call, so no workflow has called SendLinks with it
-   since. Ready to revoke, not done (revoking a bearer needs Krish's yes):
-   `update sendlinks.clients set revoked_at = now() where name = 'n8n'`. The n8n credential
-   `SendLinks` then stops working and can be deleted in n8n.
+2. Delete the dead n8n credential `SendLinks` in n8n (its bearer was revoked 2026-11-14).
+3. Run the sweep again when links expire: `select sendlinks.sweep_expired_uploads()` (dry), then `(false)` and remove the paths through the Storage API.
 4. File links minted by `make_send_link` are not written to `growth_asset_links`, so Control
    Center's 30-minute asset read does not pick up their opens; `read_send_link` reads them on
    demand. The fix lives in `krishanraja/control-center` (audit finding lane5-1, 2026-11-14).
@@ -64,14 +57,12 @@ Live on Mindmaker OS. Control Center is the main caller. Recipient page: mock wa
    them is not in this repository or the Mindmaker OS functions, so moving them behind SendLinks
    is more than a small change: find that writer, have it mint a SendLinks link instead of
    storing a public URL, reissue the 3 existing zips as links, then make the bucket private.
-6. The expired upload sweep (PR #8) is built and waits to be applied; the real run deletes 18
-   canary files through the Storage API and needs Krish's yes at the time.
 
 Control Center documents this service in its own `docs/app/tools/links.md`; the architecture-doc
 item from 2026-10-22 is closed by that page.
 
 ## Next action
 
-Krish opens the phone-check link on an iPhone and an Android (inline playback, seeking, time to
-first frame) and the result goes in the table above. Then his verdict on the recipient page mock
-(PR #9). `NOW.md` carries the same order.
+Krish opens the phone-check link again on Android and for the first time on an iPhone (inline
+playback, seeking, time to first frame), now that later byte ranges are served (PR #11), and the
+result goes in the table above. Then his verdict on the recipient page mock (`web/mock/`).
