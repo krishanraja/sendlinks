@@ -9,6 +9,8 @@ export interface Db {
   linkStatus(clientId: string, linkId: string): Promise<Json | null>;
   listLinks(clientId: string, filters: Json): Promise<Json>;
   revokeLink(clientId: string, linkId: string, reason: string | null): Promise<Json>;
+  // The message carrying the link went out: its life counts from now. First call wins.
+  markSent(clientId: string, linkId: string, body: Json): Promise<Json>;
   setReceiptWebhook(clientId: string, url: string | null, secret: string | null): Promise<Json>;
   openLink(token: string, password: string | null, ipSha256: string | null, userAgent: string | null, consume: boolean): Promise<Json>;
   refundView(linkId: string, detail: string): Promise<void>;
@@ -150,6 +152,12 @@ export function makeApiHandler(deps: Deps, fnName = "sendlinks-api") {
       const body = await req.json().catch(() => ({})) as Json;
       const reason = typeof body.reason === "string" ? body.reason.slice(0, 500) : null;
       const r = await deps.db.revokeLink(clientId, linkId, reason);
+      return json(r.ok ? 200 : API_ERRORS[String(r.error)] ?? 400, r);
+    }
+    if (req.method === "POST" && seg.length === 3 && seg[2] === "sent") {
+      const body = await req.json().catch(() => ({})) as Json;
+      const p: Json = typeof body.message_id === "string" ? { message_id: body.message_id } : {};
+      const r = await deps.db.markSent(clientId, linkId, p);
       return json(r.ok ? 200 : API_ERRORS[String(r.error)] ?? 400, r);
     }
     return json(405, { ok: false, error: "method_not_allowed" });

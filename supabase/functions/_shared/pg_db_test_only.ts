@@ -16,6 +16,8 @@ export function pgDb(dbUrl: string): Db & { end(): Promise<void> } {
       (await one(sql`select public.sendlinks_list_links(${clientId}::uuid, ${sql.json(f as never)}) as r`)) as Json,
     revokeLink: async (clientId, linkId, reason) =>
       (await one(sql`select public.sendlinks_revoke_link(${clientId}::uuid, ${linkId}::uuid, ${reason}) as r`)) as Json,
+    markSent: async (clientId, linkId, body) =>
+      (await one(sql`select public.sendlinks_mark_sent(${clientId}::uuid, ${linkId}::uuid, ${sql.json(body as never)}) as r`)) as Json,
     setReceiptWebhook: async (clientId, url, secret) =>
       (await one(sql`select public.sendlinks_set_receipt_webhook(${clientId}::uuid, ${url}, ${secret}) as r`)) as Json,
     openLink: async (token, password, ipSha256, userAgent, consume) =>
