@@ -220,7 +220,7 @@ begin
        and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'))
   ), 'public wrappers are closed to anon and authenticated';
   assert (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname like 'sendlinks\_%'
-           and has_function_privilege('service_role', p.oid, 'execute')) = 11, 'service role can call all eleven wrappers';
+           and has_function_privilege('service_role', p.oid, 'execute')) = 12, 'service role can call all twelve wrappers';
   raise notice 'ok: append only, privileges';
 end $$;
 
@@ -289,4 +289,60 @@ begin
   perform sendlinks.record_range_download(lid, 10, 'ip-hash-b', ua);
   assert (select download_count from sendlinks.links where id = lid) = 2, 'another viewer counts';
   raise notice 'ok: byte ranges';
+end $$;
+
+-- I-28: a link's life counts from the send. The first mark wins; later marks change nothing.
+do $$
+declare
+  c   uuid := (select v from t where k = 'client');
+  r   jsonb;
+  m   jsonb;
+  m2  jsonb;
+  lid uuid;
+  e0  timestamptz;
+begin
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"url","title":"Sent later","url":"https://a.b","expires_in_hours":24}');
+  lid := (r->>'link_id')::uuid;
+  -- Made a day ago: without a send mark it would have 0 hours left.
+  update sendlinks.links set created_at = now() - interval '23 hours',
+                              expires_at = now() + interval '1 hour' where id = lid;
+  e0 := (select expires_at from sendlinks.links where id = lid);
+
+  m := sendlinks.mark_sent(c, lid, '{"message_id":"gmail-123"}');
+  assert (m->>'ok')::boolean and (m->>'first')::boolean, 'first mark: ' || m;
+  assert (m->>'expires_at')::timestamptz between now() + interval '23 hours 59 minutes' and now() + interval '24 hours 1 minute',
+    'life restarts at the send, same length: ' || m;
+  assert (select sent_at from sendlinks.links where id = lid) is not null, 'sent_at stored';
+  assert (select count(*) from sendlinks.events where link_id = lid and kind = 'sent') = 1, 'one sent event';
+  assert (select detail->>'message_id' from sendlinks.events where link_id = lid and kind = 'sent') = 'gmail-123', 'message id kept';
+
+  m2 := sendlinks.mark_sent(c, lid, '{}');
+  assert (m2->>'ok')::boolean and not (m2->>'first')::boolean, 'second mark is not first: ' || m2;
+  assert m2->>'sent_at' = m->>'sent_at' and m2->>'expires_at' = m->>'expires_at', 'first call wins';
+  assert (select count(*) from sendlinks.events where link_id = lid and kind = 'sent') = 1, 'still one sent event';
+
+  assert (sendlinks.link_status(c, lid)->>'sent_at') is not null, 'status shows sent_at';
+  assert exists (select 1 from jsonb_array_elements(sendlinks.list_links(c, '{}')->'links') x
+                  where x->>'link_id' = lid::text and x->>'sent_at' is not null), 'list shows sent_at';
+
+  -- Another caller's link is not found; nor is an unknown id.
+  assert sendlinks.mark_sent(sendlinks.authenticate(sendlinks.mint_client('other-sender', null)), lid, '{}')->>'error' = 'not_found', 'scoped to caller';
+  assert sendlinks.mark_sent(c, gen_random_uuid(), '{}')->>'error' = 'not_found', 'unknown link';
+
+  -- A dead link is not brought back by a send mark.
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"url","title":"Dead","url":"https://a.b"}');
+  perform sendlinks.revoke_link(c, (r->>'link_id')::uuid, 'test');
+  m := sendlinks.mark_sent(c, (r->>'link_id')::uuid, '{}');
+  assert m->>'error' = 'link_inactive' and m->>'detail' = 'revoked', 'revoked link stays dead: ' || m;
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"url","title":"Old","url":"https://a.b"}');
+  update sendlinks.links set expires_at = now() - interval '1 minute' where id = (r->>'link_id')::uuid;
+  assert sendlinks.mark_sent(c, (r->>'link_id')::uuid, '{}')->>'error' = 'link_inactive', 'expired link stays dead';
+
+  -- An overlong message id is cut, not refused.
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"url","title":"Long id","url":"https://a.b"}');
+  m := sendlinks.mark_sent(c, (r->>'link_id')::uuid, jsonb_build_object('message_id', repeat('x', 500)));
+  assert (m->>'ok')::boolean, 'long id accepted: ' || m;
+  assert (select char_length(detail->>'message_id') from sendlinks.events
+           where link_id = (r->>'link_id')::uuid and kind = 'sent') = 200, 'message id cut to 200';
+  raise notice 'ok: sent marks';
 end $$;

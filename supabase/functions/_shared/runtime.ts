@@ -30,6 +30,8 @@ export function restDb(supabaseUrl: string, serviceKey: string): Db {
     listLinks: (clientId, f) => rpc("list_links", { p_client_id: clientId, f }),
     revokeLink: (clientId, linkId, reason) =>
       rpc("revoke_link", { p_client_id: clientId, p_link_id: linkId, p_reason: reason }),
+    markSent: (clientId, linkId, body) =>
+      rpc("mark_sent", { p_client_id: clientId, p_link_id: linkId, p: body }),
     setReceiptWebhook: (clientId, url, secret) =>
       rpc("set_receipt_webhook", { p_client_id: clientId, p_url: url, p_secret: secret }),
     openLink: (token, password, ipSha256, userAgent, consume) =>

@@ -378,6 +378,37 @@ Deno.test({
       await del.body?.cancel();
     });
 
+    await t.step("POST /links/{id}/sent starts the link's life at the send, first call wins", async () => {
+      const made = await (await post("/links", {
+        venture: "mindmake", kind: "url", title: "Mark me", url: "https://example.com/m", expires_in_hours: 24,
+      })).json();
+      await sql`update sendlinks.links set created_at = now() - interval '20 hours',
+                expires_at = now() + interval '4 hours' where id = ${made.link_id}::uuid`;
+      const first = await post(`/links/${made.link_id}/sent`, { message_id: "msg-1" });
+      assertEquals(first.status, 200);
+      const a = await first.json();
+      assertEquals(a.first, true);
+      const hoursLeft = (Date.parse(a.expires_at) - Date.now()) / 3_600_000;
+      assert(hoursLeft > 23.9 && hoursLeft <= 24, `24 hours from the send, got ${hoursLeft}`);
+      const again = await (await post(`/links/${made.link_id}/sent`, {})).json();
+      assertEquals(again.first, false);
+      assertEquals(again.sent_at, a.sent_at);
+      assertEquals(again.expires_at, a.expires_at);
+      assertEquals((await status(made.link_id)).sent_at, a.sent_at);
+      const notMine = await post(`/links/00000000-0000-4000-8000-000000000000/sent`, {});
+      assertEquals(notMine.status, 404);
+      await notMine.body?.cancel();
+      await post(`/links/${made.link_id}/revoke`, {}).then((r) => r.body?.cancel());
+      const dead = await (await post("/links", { venture: "mindmake", kind: "url", title: "Gone", url: "https://a.b" })).json();
+      await post(`/links/${dead.link_id}/revoke`, {}).then((r) => r.body?.cancel());
+      const refused = await post(`/links/${dead.link_id}/sent`, {});
+      assertEquals(refused.status, 409);
+      assertEquals((await refused.json()).error, "link_inactive");
+      const wrongVerb = await api(new Request(`${BASE}/sendlinks-api/links/${dead.link_id}/sent`, { headers: auth }));
+      assertEquals(wrongVerb.status, 405);
+      await wrongVerb.body?.cancel();
+    });
+
     await t.step("ip is stored only as a per-link hash", async () => {
       const rows = await sql`select e.ip_sha256 from sendlinks.events e
         join sendlinks.links l on l.id = e.link_id
