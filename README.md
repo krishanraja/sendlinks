@@ -109,6 +109,19 @@ with header `X-SendLinks-Secret: <secret>`, so an n8n Webhook node with Header A
 `DELETE /webhook` stops it. Delivery is fire and forget through pg_net; the stored receipts
 are the record.
 
+### Mark sent: `POST /links/{link_id}/sent` with optional `{"message_id": "..."}`
+
+Call it once the message carrying the link has gone. The link's life then counts from the send:
+`expires_at` moves to now plus the life it was made with, so a link drafted on Monday and sent on
+Thursday still has its full week. The first call wins; a later call changes nothing and answers
+with the first (`first: false`, same `sent_at` and `expires_at`). A link that is already revoked,
+expired, used up or locked answers `409 link_inactive` and stays dead. A link never marked keeps
+the expiry it was made with. `sent_at` shows in `GET /links/{id}` and `GET /links`.
+
+```json
+{ "ok": true, "first": true, "link_id": "8f0c...", "sent_at": "...", "expires_at": "...", "state": "active" }
+```
+
 ### Revoke: `POST /links/{link_id}/revoke` with `{"reason": "..."}`
 
 ## Opening a link
