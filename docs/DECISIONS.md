@@ -75,3 +75,22 @@ OS is pull-only (architecture 0a, 2026-09-06).
 Krish asked that all ventures know SendLinks is how proposals, files and resources reach
 customers. The fleet learns rules from `standards_registry`, rendered nightly into the digest
 every agent loads, so the rule is DEL-002 (scope all, pre-check), next to DEL-001.
+
+## D10 2026-11-14: A link's life counts from the send, first mark wins (fleet I-28, D19)
+
+Links are made while a message is drafted and can wait days before it goes, so their week was
+spent before the recipient saw them. The caller now marks the send (`POST /links/{id}/sent`); the
+first mark moves `expires_at` to the send plus the life the link was made with. Later marks
+answer with the first, so a retry or a second caller cannot stretch a link, and a dead link is
+not revived. A link never marked keeps its original expiry, so callers that do not mark lose
+nothing. Rejected: counting from the first open (a scanner's fetch would start the clock) and
+letting the caller pass its own send time (it could extend a link at will).
+
+## D11 2026-11-14: The upload sweep picks in SQL and deletes through the Storage API (fleet 2.6)
+
+Supabase blocks deleting `storage.objects` rows from SQL (`storage.protect_delete`), and a row
+deleted that way would orphan the bytes anyway. `sendlinks.sweep_expired_uploads` therefore
+picks (only the `sendlinks` bucket, only objects whose every link's expiry has passed, never an
+object with no link), records the sweep on each link, and returns the paths; the operator removes
+them through the Storage API and a second dry run must list nothing. A revoked link whose expiry
+is still ahead keeps its file until then, so a mistaken revoke stays recoverable by reissue.
