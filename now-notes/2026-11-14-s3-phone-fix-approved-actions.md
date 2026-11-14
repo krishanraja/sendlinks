@@ -1,3 +1,0 @@
-Status: Android phone check failed (broken video: later byte ranges refused because they were bound to one ip and agent); fixed live with migration `20261114175146_sendlinks_ranges_any_viewer` (PR #11) and replayed: later ranges 206, bytes identical, iPhone player agent included. On Krish's approval: Control Center's bearer scoped to `{mindmake}` and still working, the n8n bearer revoked (its Vault bearer no longer authenticates), the sweep applied and run (18 canary files removed through the Storage API, second dry run 0).
-Next: Krish retests the phone-check link on Android and an iPhone and the result goes into `docs/STATE.md`.
-North Star check (2026-11-14): holds.
