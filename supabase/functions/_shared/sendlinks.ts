@@ -17,6 +17,8 @@ export interface Db {
   recordDownload(linkId: string, bytes: number, complete: boolean, ipSha256: string | null, userAgent: string | null): Promise<void>;
   // A later piece of a file for a viewer who spent a view in the last 30 minutes; spends nothing.
   continueLink(token: string, ipSha256: string | null, userAgent: string | null): Promise<Json>;
+  // The recipient page's card: title, kind, size, expiry. Spends nothing; a 'previewed' event.
+  linkMeta(token: string, ipSha256: string | null, userAgent: string | null): Promise<Json>;
   // The last byte left in a range: one download per viewer per 30 minutes.
   recordRangeDownload(linkId: string, bytes: number, ipSha256: string | null, userAgent: string | null): Promise<void>;
 }
@@ -58,12 +60,21 @@ const SAFE_HEADERS = {
   "X-Content-Type-Options": "nosniff",
 };
 
-function json(status: number, body: Json): Response {
+function json(status: number, body: Json, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...SAFE_HEADERS, "Content-Type": "application/json" },
+    headers: { ...SAFE_HEADERS, "Content-Type": "application/json", ...extra },
   });
 }
+
+// The recipient page lives on the venture's own site and calls the open route from there. The
+// token is the secret, so any origin may read the card and the JSON answers; no cookies are used.
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "content-type",
+  "Access-Control-Max-Age": "600",
+};
 
 function text(status: number, body: string, extra: Record<string, string> = {}): Response {
   return new Response(body, {
@@ -254,20 +265,32 @@ export function parseRange(header: string | null): { header: string; fromStart: 
 export function makeOpenHandler(deps: Deps, fnName = "sendlinks-open") {
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
-    const token = segmentsAfter(url, fnName)[0] ?? "";
-    const asJson = req.method === "POST";
+    const seg = segmentsAfter(url, fnName);
+    const token = seg[0] ?? "";
+    const card = req.method === "GET" && seg.length === 2 && seg[1] === "meta";
+    const asJson = req.method === "POST" || card;
     const fail = (reason: string) => {
       const [status, message] = OPEN_ERRORS[reason] ?? [400, "This link cannot be opened."];
-      return asJson ? json(status, { ok: false, reason, message }) : text(status, message + "\n");
+      return asJson ? json(status, { ok: false, reason, message }, CORS) : text(status, message + "\n");
     };
 
+    if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...SAFE_HEADERS, ...CORS } });
     if (!["GET", "HEAD", "POST"].includes(req.method)) return text(405, "Method not allowed\n");
-    if (!TOKEN_RE.test(token)) return fail("not_found");
+    if (!TOKEN_RE.test(token) || (seg.length > 1 && !card)) return fail("not_found");
 
     const ua = req.headers.get("user-agent");
     const ip = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim();
     // Salted with the token, so the same visitor cannot be linked across links.
     const ipHash = ip ? await sha256Hex(`${token}:${ip}`) : null;
+
+    if (card) {
+      const m = await deps.db.linkMeta(token, ipHash, ua);
+      if (!m.ok) {
+        const [status] = OPEN_ERRORS[String(m.reason)] ?? [400];
+        return json(status, m, CORS);
+      }
+      return json(200, m, CORS);
+    }
     const preview = req.method === "HEAD" || (!asJson && PREVIEW_UA_RE.test(ua ?? ""));
 
     let password: string | null = null;
@@ -345,7 +368,7 @@ export function makeOpenHandler(deps: Deps, fnName = "sendlinks-open") {
         views: r.views,
         max_views: r.max_views ?? null,
         expires_at: r.expires_at,
-      });
+      }, CORS);
     }
     if (target) return new Response(null, { status: 302, headers: { ...SAFE_HEADERS, Location: target } });
     const head = r.message ? `${r.title}\n\n${r.message}\n\n` : `${r.title}\n\n`;
