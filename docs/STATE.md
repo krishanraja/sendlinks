@@ -2,7 +2,7 @@
 
 The one current-truth file for SendLinks. Updated at every phase change.
 
-Updated: 2026-11-14
+Updated: 2026-11-14 (byte ranges)
 
 ## Outcome
 
@@ -17,7 +17,8 @@ Live on Mindmaker OS. Control Center is the main caller. Recipient page not star
 | | status | evidence |
 |---|---|---|
 | Schema and SQL engine | live | migrations `20261022120252_sendlinks_core`, `20261022122402_sendlinks_receipts` in history (the hand-written duplicate row was deleted on Krish's approval); 4 tables, 16 functions; anon and authenticated cannot reach the schema or the 9 wrappers |
-| `sendlinks-api` v7, `sendlinks-open` v4 | live, verify_jwt off | deployed 2026-10-22 from this code (Management API, read 2026-11-14); live canary 2026-10-22: 20/20 JSON creates and 10/10 uploads 201 (slowest 5.1 s cold); read-once text 200 then 410; unfurler preview spends nothing; uploaded file streams back byte-identical; content-library file 2,055,849 bytes in 1.9 s |
+| `sendlinks-api` v7, `sendlinks-open` v6 | live, verify_jwt off | api deployed 2026-10-22 from this code; open redeployed 2026-11-14 for byte ranges (the live v5 source matched this repository's code before it, read through the Management API); live canary 2026-10-22: 20/20 JSON creates and 10/10 uploads 201 (slowest 5.1 s cold); read-once text 200 then 410; unfurler preview spends nothing; uploaded file streams back byte-identical; content-library file 2,055,849 bytes in 1.9 s |
+| Byte ranges (phone video playback and seeking) | live 2026-11-14: migration applied, `sendlinks-open` v6 | migration `20261114123717_sendlinks_ranges` (`continue_link`, `record_range_download`); the open route answers `206` with `Content-Range` and `Accept-Ranges: bytes`. Before it, every request got `200` and the whole file, so seeking failed and iPhone Safari was expected not to play an mp4 inline (code reading, 2026-11-14). Local tests: 10 SQL suites, 23 HTTP steps, including a continuation from another IP or agent refused and read-once and password links unchanged; three mutations each fail the suite. Live phone check not run: it needs a canary bearer, and minting one is a wall |
 | Receipts | live | canary link: opened and downloaded recorded, events `created`, `opened`, `downloaded` |
 | Receipt webhooks | live | pg_net delivered 4 POSTs for 2 canary links (open and download each) |
 | `sendlinks` bucket | live | private, 26214400 byte limit |
@@ -26,6 +27,7 @@ Live on Mindmaker OS. Control Center is the main caller. Recipient page not star
 | n8n credential | live | `SendLinks` (httpHeaderAuth, id `SNBwrviRkkamYMfN`), restricted to the project's own host (`$SUPABASE_URL`); bearer copied Vault to n8n without leaving the shell; listed back through the n8n MCP |
 | DEL-002 standard | active in `standards_registry`, scope all, pre-check | inferred: reaches agents in the next nightly digest (renderer `regenerate-standards-digest.py` on the VPS, not readable from here) |
 | Local tests | pass | `tests/run-local.sh`: 9 SQL suites, 20 HTTP steps; `deno check` and `deno lint` clean |
+| Live phone check of an mp4 link (inline playback, seeking, time to first frame) | not run | needs a link minted by an existing caller; no new bearer is made for it |
 | Recipient page (branded, password form, read receipts) | not started | material surface: mock first (D5) |
 | Expired upload sweep | not started | uploads are kept until a sweep exists |
 

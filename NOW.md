@@ -2,7 +2,7 @@
 
 As of 2026-11-14. The full current truth is [docs/STATE.md](docs/STATE.md); this file only points.
 
-- **Status:** live on Mindmaker OS (`sendlinks-api` v7, `sendlinks-open` v4). Callers: Control
+- **Status:** live on Mindmaker OS (`sendlinks-api` v7, `sendlinks-open` v6). Callers: Control
   Center (asset links for growth-mindmake emails, and the `make_send_link` / `read_send_link`
   connector tools) and n8n (credential `SendLinks`).
 - **Next action:** mock the recipient click-through page (branded per venture, password form,

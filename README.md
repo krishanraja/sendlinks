@@ -16,6 +16,12 @@ and their approvals; SendLinks never emails anyone.
 - Files stay in private buckets and stream through SendLinks itself, so no Storage URL ever
   reaches the recipient and the last byte leaving is what writes the download receipt. PDFs,
   images, plain text, mp4 and mp3 open in the browser; anything else downloads, sandboxed.
+- Video and audio can be played and seeked on a phone: the open route answers byte ranges
+  (`Accept-Ranges: bytes`, `206` with `Content-Range`). A piece starting at byte 0 is an open and
+  spends a view; a later piece spends nothing and is served only to the viewer (same IP hash and
+  user agent) who spent a view in the last 30 minutes, while the link is still active. Read-once
+  and password links ignore ranges and stay whole file, one spend. With ranges, the download
+  receipt is the last byte of the file served in any piece, once per viewer per 30 minutes.
 - Optional `max_views` (1 means read once), optional password (bcrypt, locks after 10 wrong tries).
 - Chat unfurlers and scanners that name themselves (Slack, LinkedIn, WhatsApp, Googlebot, `HEAD`,
   curl) see the title only and never spend a view. Mail scanners that pose as browsers (Outlook

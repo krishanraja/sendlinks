@@ -11,14 +11,15 @@ Status: steps 1 to 5 done on 2026-10-22 (docs/STATE.md has the readback).
 Apply `supabase/migrations/*.sql` in order through the Management API migrations endpoint
 (`POST /v1/projects/{ref}/database/migrations`, which records history itself) or `supabase db push`.
 `sendlinks_core` creates the `sendlinks` schema. `sendlinks_receipts` adds receipts, webhooks and
-nine `public.sendlinks_*` wrappers that only the service role can execute. Neither writes the
-storage schema.
+nine `public.sendlinks_*` wrappers that only the service role can execute. `sendlinks_ranges`
+(2026-11-14) adds `continue_link` and `record_range_download` and their two wrappers, for byte
+ranges. None writes the storage schema.
 
 Readback:
 
 ```sql
 select count(*) from information_schema.tables where table_schema = 'sendlinks';      -- 4
-select count(*) from pg_proc where pronamespace = 'sendlinks'::regnamespace;          -- 16
+select count(*) from pg_proc where pronamespace = 'sendlinks'::regnamespace;          -- 18 since sendlinks_ranges
 select count(*) from pg_proc p where pronamespace = 'public'::regnamespace and proname like 'sendlinks\_%'
    and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'));  -- 0
 select has_schema_privilege('anon', 'sendlinks', 'usage');                            -- false

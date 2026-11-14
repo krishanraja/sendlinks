@@ -220,6 +220,73 @@ begin
        and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'))
   ), 'public wrappers are closed to anon and authenticated';
   assert (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname like 'sendlinks\_%'
-           and has_function_privilege('service_role', p.oid, 'execute')) = 9, 'service role can call all nine wrappers';
+           and has_function_privilege('service_role', p.oid, 'execute')) = 11, 'service role can call all eleven wrappers';
   raise notice 'ok: append only, privileges';
+end $$;
+
+-- Byte ranges (20261114123717_sendlinks_ranges): a later piece of a file spends nothing, and only
+-- the viewer who spent a view in the last 30 minutes gets it. Read-once and password links are
+-- never continued.
+do $$
+declare
+  c   uuid := (select v from t where k = 'client');
+  tok text;
+  lid uuid;
+  r   jsonb;
+  ip  text := 'ip-hash-a';
+  ua  text := 'Mozilla/5.0 (iPhone)';
+begin
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"Cut","bucket":"content-library","path":"guides/ai-readiness.pdf","max_views":2}');
+  tok := r->>'token'; lid := (r->>'link_id')::uuid;
+
+  r := sendlinks.continue_link(tok, ip, ua);
+  assert r->>'reason' = 'no_recent_view', 'no continuation before a spent view: ' || r;
+
+  r := sendlinks.open_link(tok, null, ip, ua, true);
+  assert (r->>'views')::int = 1, 'the first piece spends one view: ' || r;
+
+  r := sendlinks.continue_link(tok, ip, ua);
+  assert (r->>'ok')::boolean and r->>'path' = 'guides/ai-readiness.pdf', 'same viewer continues: ' || r;
+  assert (select view_count from sendlinks.links where id = lid) = 1, 'a continuation spends nothing';
+
+  assert sendlinks.continue_link(tok, 'ip-hash-b', ua)->>'reason' = 'no_recent_view', 'another ip is refused';
+  assert sendlinks.continue_link(tok, ip, 'Mozilla/5.0 (Android)')->>'reason' = 'no_recent_view', 'another agent is refused';
+  assert sendlinks.continue_link(tok, null, ua)->>'reason' = 'no_recent_view', 'no ip is refused';
+  assert sendlinks.continue_link(tok, ip, null)->>'reason' = 'no_recent_view', 'no agent is refused';
+  assert sendlinks.continue_link('x', ip, ua)->>'reason' = 'not_found', 'unknown token';
+
+  -- A spent view older than 30 minutes no longer opens a continuation (events are append only,
+  -- so the old open is inserted already old).
+  insert into sendlinks.events (link_id, kind, ip_sha256, user_agent, at)
+  values (lid, 'opened', 'ip-hash-old', ua, now() - interval '31 minutes');
+  assert sendlinks.continue_link(tok, 'ip-hash-old', ua)->>'reason' = 'no_recent_view', 'an open 31 minutes ago is too old';
+
+  -- Exhausted by real views: the second view is the last, and then nobody continues.
+  perform sendlinks.open_link(tok, null, 'ip-hash-b', ua, true);
+  assert sendlinks.continue_link(tok, ip, ua)->>'reason' = 'exhausted', 'an exhausted link is not continued';
+
+  -- Revoked: refused even for the recent viewer.
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"Cut 2","bucket":"content-library","path":"guides/ai-readiness.pdf"}');
+  perform sendlinks.open_link(r->>'token', null, ip, ua, true);
+  assert (sendlinks.continue_link(r->>'token', ip, ua)->>'ok')::boolean, 'unlimited link continues';
+  perform sendlinks.revoke_link(c, (r->>'link_id')::uuid, 'test');
+  assert sendlinks.continue_link(r->>'token', ip, ua)->>'reason' = 'revoked', 'a revoked link is not continued';
+
+  -- Read-once and password links keep today's behaviour: never continued.
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"Once","bucket":"content-library","path":"guides/ai-readiness.pdf","max_views":1}');
+  perform sendlinks.open_link(r->>'token', null, ip, ua, true);
+  assert sendlinks.continue_link(r->>'token', ip, ua)->>'reason' = 'whole_file_only', 'read-once is whole file only';
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"Locked","bucket":"content-library","path":"guides/ai-readiness.pdf","password":"open sesame"}');
+  perform sendlinks.open_link(r->>'token', 'open sesame', ip, ua, true);
+  assert sendlinks.continue_link(r->>'token', ip, ua)->>'reason' = 'whole_file_only', 'password link is whole file only';
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"text","title":"T","text":"x"}');
+  assert sendlinks.continue_link(r->>'token', ip, ua)->>'reason' = 'whole_file_only', 'text link is whole file only';
+
+  -- The tail of the file counts as a download once per viewer per 30 minutes.
+  perform sendlinks.record_range_download(lid, 10, ip, ua);
+  perform sendlinks.record_range_download(lid, 10, ip, ua);
+  assert (select download_count from sendlinks.links where id = lid) = 1, 'range download counted once';
+  perform sendlinks.record_range_download(lid, 10, 'ip-hash-b', ua);
+  assert (select download_count from sendlinks.links where id = lid) = 2, 'another viewer counts';
+  raise notice 'ok: byte ranges';
 end $$;
