@@ -407,8 +407,13 @@ function streamFile(
     "Content-Type": contentType,
     "Content-Disposition": `${INLINE_TYPES.test(contentType) ? "inline" : "attachment"}; filename="${fileName}"`,
   };
-  // Chrome will not render a PDF inside a sandboxed document; everything else gets the sandbox.
-  if (!/^application\/pdf\b/i.test(contentType)) {
+  // Chrome will not render a PDF inside a sandboxed document. Video and audio cannot run script
+  // (nosniff keeps them from being read as HTML), and a sandbox breaks them: the browser's player
+  // page gets origin 'null' and its fetch of the file is blocked as cross-origin. Everything
+  // else gets the sandbox.
+  if (/^(video|audio)\//i.test(contentType)) {
+    headers["Content-Security-Policy"] = "default-src 'none'; media-src 'self'; style-src 'unsafe-inline'";
+  } else if (!/^application\/pdf\b/i.test(contentType)) {
     headers["Content-Security-Policy"] = "sandbox; default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'";
   }
   if (length) headers["Content-Length"] = length;
