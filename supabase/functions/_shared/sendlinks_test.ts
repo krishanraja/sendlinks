@@ -355,6 +355,25 @@ Deno.test({
       await settled();
     });
 
+    await t.step("video and audio play without a sandbox, so the browser's player can fetch them", async () => {
+      // A sandboxed document has origin 'null'; Chrome's video page then fetches the file
+      // cross-origin and blocks it (the 2026-11-14 Android failure).
+      for (const [name, type] of [["clip.mp4", "video/mp4"], ["talk.mp3", "audio/mpeg"]]) {
+        const form = new FormData();
+        form.append("meta", JSON.stringify({ venture: "mindmake", title: name }));
+        form.append("file", new File([new Uint8Array(64)], name, { type }));
+        const { url } = await (await api(new Request(`${BASE}/sendlinks-api/links`, { method: "POST", headers: auth, body: form }))).json();
+        const go = await visit(url);
+        const csp = go.headers.get("content-security-policy")!;
+        assert(!/sandbox/.test(csp), `${type} must not be sandboxed: ${csp}`);
+        assertMatch(csp, /default-src 'none'/);
+        assertEquals(go.headers.get("x-content-type-options"), "nosniff");
+        assertEquals(go.headers.get("content-disposition"), `inline; filename="${name}"`);
+        await go.body?.cancel();
+        await settled();
+      }
+    });
+
     await t.step("list links with receipts, filtered", async () => {
       await post("/links", { venture: "mindmake", kind: "url", title: "Proposal for Acme", url: "https://a.b/p", recipient_email: "Jo@Acme.com", purpose: "proposal" });
       const all = await (await api(new Request(`${BASE}/sendlinks-api/links?purpose=proposal`, { headers: auth }))).json();
