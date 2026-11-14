@@ -23,7 +23,7 @@ Live on Mindmaker OS. Control Center is the main caller. Recipient page not star
 | `sendlinks` bucket | live | private, 26214400 byte limit |
 | Bearers | `n8n` and `control-center`, both all ventures (`ventures` null) | `n8n`: in Vault as `sendlinks_n8n_bearer`; proven by creating and revoking a Pulse link. `control-center`: minted 2026-10-23, used by Control Center as `SENDLINKS_BEARER`; made its first file links 2026-11-13, last used 2026-11-14 (`sendlinks.clients`, read 2026-11-14). Canary bearers revoked |
 | Control Center caller | live | `api/_sendLinks.ts` creates asset links for growth-mindmake emails (venture `mindmake`); the harness connector tools `make_send_link` and `read_send_link` (`api/harness/_sendlinks-mcp.ts`) mint a file link and read its opens back. Same routes, fields and bearer as `sendlinks-api` |
-| n8n credential | live | `SendLinks` (httpHeaderAuth, id `SNBwrviRkkamYMfN`), restricted to `gojpffsrxybbpbdzzrvs.supabase.co`; bearer copied Vault to n8n without leaving the shell; listed back through the n8n MCP |
+| n8n credential | live | `SendLinks` (httpHeaderAuth, id `SNBwrviRkkamYMfN`), restricted to the project's own host (`$SUPABASE_URL`); bearer copied Vault to n8n without leaving the shell; listed back through the n8n MCP |
 | DEL-002 standard | active in `standards_registry`, scope all, pre-check | inferred: reaches agents in the next nightly digest (renderer `regenerate-standards-digest.py` on the VPS, not readable from here) |
 | Local tests | pass | `tests/run-local.sh`: 9 SQL suites, 20 HTTP steps; `deno check` and `deno lint` clean |
 | Recipient page (branded, password form, read receipts) | not started | material surface: mock first (D5) |
@@ -31,7 +31,7 @@ Live on Mindmaker OS. Control Center is the main caller. Recipient page not star
 
 ## Live facts (read 2026-10-22)
 
-- Project `gojpffsrxybbpbdzzrvs` "Mindmaker OS", Postgres 17.
+- Project "Mindmaker OS" (`$SUPABASE_PROJECT_REF`), Postgres 17.
 - Active ventures: circle, full-time, heartside, legibility, mindmake, mm-ctrl, publication, pulse,
   signal-noise.
 - The edge runtime's direct Postgres connections hung on about one request in three; the functions

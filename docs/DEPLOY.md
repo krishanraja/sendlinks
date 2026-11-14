@@ -1,6 +1,7 @@
 # Deploy runbook
 
-Target: Supabase project `gojpffsrxybbpbdzzrvs` (Mindmaker OS, us-west-2). Each step below is a
+Target: the Mindmaker OS Supabase project (us-west-2), whose ref is `$SUPABASE_PROJECT_REF` in the
+shell that deploys; it is never written in this public repository. Each step below is a
 separate production action and needs Krish's approval at the time it runs.
 
 Status: steps 1 to 5 done on 2026-10-22 (docs/STATE.md has the readback).
@@ -37,8 +38,8 @@ which only the local tests import).
 Both authenticate themselves (`sendlinks-api` by bearer hash, `sendlinks-open` is public by design).
 
 ```
-supabase functions deploy sendlinks-api  --project-ref gojpffsrxybbpbdzzrvs --no-verify-jwt
-supabase functions deploy sendlinks-open --project-ref gojpffsrxybbpbdzzrvs --no-verify-jwt
+supabase functions deploy sendlinks-api  --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
+supabase functions deploy sendlinks-open --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
 ```
 
 They use the platform-injected `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`, and reach the
