@@ -26,6 +26,7 @@ Krish's engine: every file that reaches a customer goes as a tracked link (DEL-0
 
 <!-- north-star-state {"week_of":"2026-11-09","week_target":null,"current":null,"current_as_of":null,"current_source":null,"urgency":4,"urgency_reason":"no North Star of its own yet; Krish sets one"} --> **North Star number: U4, not measured.** sendlinks has no North Star of its own yet (`docs/NORTH_STAR.md`); Krish sets one.
 
+- The recipient page is built from the approved mock (`web/recipient/`, PR #16) and its card endpoint is live (`sendlinks-open` v8, migration `20261114191454_sendlinks_link_card`); in an emulated Pixel 7 against the live link the card loads and the video plays inside the page. It is not hosted yet. (2026-11-14)
 - Krish's Android still showed a broken video after the range fix. Cause: the `sandbox` CSP gave Chrome's video page origin 'null', so the player's fetch of the file was blocked as cross-origin. Video and audio now go without the sandbox (`sendlinks-open` v7); emulated Android Chrome on the live link loads, seeks and reaches ready state with no error. (2026-11-14)
 - Krish's Android plays the phone-check video inline after the two fixes (ranges for any recent viewer, no sandbox for media), about 5 seconds to load. PR #14's code is live as `sendlinks-open` v7 and is brought onto `main` here, since #14 merged into the old branch as it was renamed. (2026-11-14)
 - `main` now exists and holds every branch's work. It was created at the old default branch's tip (470b08c), and every pull request (#1 to #12) was already merged there. Four merged branches were deleted. Two remain because this session cannot delete them: `claude/wonderful-bardeen-97nzve` (27 Oct, already contained in `main`) and the old default `claude/drive-folder-rebuild-e0suzz`. (2026-11-14)
@@ -44,7 +45,7 @@ Krish's engine: every file that reaches a customer goes as a tracked link (DEL-0
 
 ## What is next and what is waiting on Krish
 
-- Next (2026-11-14): Krish retests the phone-check link on Android and an iPhone and the result goes into `docs/STATE.md`.
+- Next (2026-11-14): with Krish's yes, host `web/recipient/` at `mindmake.co/l/` and set `SENDLINKS_PUBLIC_BASE=https://mindmake.co/l` on `sendlinks-api`.
 - Then: mock the recipient click-through page (branded per venture, password form, read receipts) for Krish's approval; it also stops mail scanners counting as opens.
 - Waiting on Krish (fleet decisions, batch 2): narrowing Control Center's bearer to the ventures it uses and revoking the unused n8n bearer; the expired upload sweep; making `skill-deliveries` private; making `main` the default branch.
 - North Star check (2026-11-14): holds.
