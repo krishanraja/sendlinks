@@ -220,7 +220,7 @@ begin
        and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'))
   ), 'public wrappers are closed to anon and authenticated';
   assert (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname like 'sendlinks\_%'
-           and has_function_privilege('service_role', p.oid, 'execute')) = 12, 'service role can call all twelve wrappers';
+           and has_function_privilege('service_role', p.oid, 'execute')) = 13, 'service role can call all thirteen wrappers';
   raise notice 'ok: append only, privileges';
 end $$;
 
@@ -410,4 +410,33 @@ begin
   assert sendlinks.open_link((select 'x'))->>'reason' = 'not_found', 'opening still answers';
   assert not has_function_privilege('anon', 'sendlinks.sweep_expired_uploads(boolean)', 'execute'), 'anon cannot sweep';
   raise notice 'ok: expired upload sweep';
+end $$;
+
+-- I-29: the recipient page reads a link's card without spending a view.
+do $$
+declare
+  c  uuid := (select v from t where k = 'client');
+  r  jsonb;
+  m  jsonb;
+begin
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"Card","bucket":"content-library","path":"guides/ai-readiness.pdf","max_views":1}');
+  m := sendlinks.link_meta(r->>'token', 'ip-page', 'Mozilla/5.0 (Android)');
+  assert (m->>'ok')::boolean and m->>'state' = 'active', 'meta of an active link: ' || m;
+  assert m->>'title' = 'Card' and m->>'kind' = 'file' and m->>'venture' = 'mindmake', 'card fields';
+  assert m->>'content_type' = 'application/pdf' and (m->>'bytes')::bigint = 48213, 'file facts';
+  assert not (m->>'has_password')::boolean and (m->>'max_views')::int = 1, 'flags';
+  assert m->>'expires_at' is not null, 'expiry';
+  assert not (m ? 'path') and not (m ? 'bucket') and not (m ? 'text') and not (m ? 'url'), 'no content in the card';
+  assert (select view_count from sendlinks.links where id = (r->>'link_id')::uuid) = 0, 'meta spends nothing';
+  assert (select count(*) from sendlinks.events where link_id = (r->>'link_id')::uuid and kind = 'previewed') = 1, 'meta is a preview';
+  -- the read-once link still opens once after any number of card reads
+  perform sendlinks.link_meta(r->>'token', 'ip-scanner', 'Mozilla/5.0');
+  assert (sendlinks.open_link(r->>'token', null, 'ip-page', 'Mozilla/5.0 (Android)')->>'ok')::boolean, 'read-once survives card reads';
+  m := sendlinks.link_meta(r->>'token', null, null);
+  assert not (m->>'ok')::boolean and m->>'reason' = 'exhausted', 'used-up link: ' || m;
+  assert sendlinks.link_meta('nope', null, null)->>'reason' = 'not_found', 'unknown token';
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"text","title":"Secret","text":"hidden","password":"pw"}');
+  m := sendlinks.link_meta(r->>'token', null, null);
+  assert (m->>'has_password')::boolean and m->>'kind' = 'text' and not (m ? 'text'), 'password card hides the text';
+  raise notice 'ok: link card';
 end $$;

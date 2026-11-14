@@ -374,6 +374,39 @@ Deno.test({
       }
     });
 
+    await t.step("the recipient page reads a card without spending, and can POST from its own site", async () => {
+      const form = new FormData();
+      form.append("meta", JSON.stringify({ venture: "mindmake", title: "Card clip", max_views: 1 }));
+      form.append("file", new File([new Uint8Array(32)], "card.mp4", { type: "video/mp4" }));
+      const { url, link_id } = await (await api(new Request(`${BASE}/sendlinks-api/links`, { method: "POST", headers: auth, body: form }))).json();
+      const page = { origin: "https://mindmake.co" };
+      const card = await visit(`${url}/meta`, { headers: page });
+      assertEquals(card.status, 200);
+      assertEquals(card.headers.get("access-control-allow-origin"), "*");
+      assertEquals(card.headers.get("cache-control"), "no-store");
+      const c = await card.json();
+      assertEquals([c.ok, c.state, c.title, c.kind, c.content_type, c.bytes, c.max_views], [true, "active", "Card clip", "file", "video/mp4", 32, 1]);
+      assert(!("path" in c) && !("bucket" in c), "no storage location in the card");
+      assertEquals((await status(link_id)).views, 0);
+
+      const pre = await visit(url, { method: "OPTIONS", headers: { ...page, "access-control-request-method": "POST", "access-control-request-headers": "content-type" } });
+      assertEquals(pre.status, 204);
+      assertEquals(pre.headers.get("access-control-allow-origin"), "*");
+      assertMatch(pre.headers.get("access-control-allow-methods")!, /POST/);
+      assertMatch(pre.headers.get("access-control-allow-headers")!, /content-type/i);
+      await pre.body?.cancel();
+
+      const gone = await visit(`${url.slice(0, -3)}zzz/meta`, { headers: page });
+      assertEquals(gone.status, 404);
+      assertEquals(gone.headers.get("access-control-allow-origin"), "*");
+      assertEquals((await gone.json()).reason, "not_found");
+
+      const t2 = await (await post("/links", { venture: "mindmake", kind: "text", title: "Note", text: "hello" })).json();
+      const read = await visit(t2.url, { method: "POST", headers: { ...page, "content-type": "application/json" }, body: "{}" });
+      assertEquals(read.headers.get("access-control-allow-origin"), "*");
+      assertEquals((await read.json()).text, "hello");
+    });
+
     await t.step("list links with receipts, filtered", async () => {
       await post("/links", { venture: "mindmake", kind: "url", title: "Proposal for Acme", url: "https://a.b/p", recipient_email: "Jo@Acme.com", purpose: "proposal" });
       const all = await (await api(new Request(`${BASE}/sendlinks-api/links?purpose=proposal`, { headers: auth }))).json();
