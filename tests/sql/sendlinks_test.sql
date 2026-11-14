@@ -225,7 +225,7 @@ begin
 end $$;
 
 -- Byte ranges (20261114123717_sendlinks_ranges): a later piece of a file spends nothing, and only
--- the viewer who spent a view in the last 30 minutes gets it. Read-once and password links are
+-- only while someone has spent a view on the link in the last 30 minutes. Read-once and password links are
 -- never continued.
 do $$
 declare
@@ -249,17 +249,20 @@ begin
   assert (r->>'ok')::boolean and r->>'path' = 'guides/ai-readiness.pdf', 'same viewer continues: ' || r;
   assert (select view_count from sendlinks.links where id = lid) = 1, 'a continuation spends nothing';
 
-  assert sendlinks.continue_link(tok, 'ip-hash-b', ua)->>'reason' = 'no_recent_view', 'another ip is refused';
-  assert sendlinks.continue_link(tok, ip, 'Mozilla/5.0 (Android)')->>'reason' = 'no_recent_view', 'another agent is refused';
-  assert sendlinks.continue_link(tok, null, ua)->>'reason' = 'no_recent_view', 'no ip is refused';
-  assert sendlinks.continue_link(tok, ip, null)->>'reason' = 'no_recent_view', 'no agent is refused';
+  -- Phones fetch later pieces from another address (a 5G phone moving between IPv6 and IPv4)
+  -- and iPhone Safari under another agent (AppleCoreMedia), so any recent open on the link counts.
+  assert (sendlinks.continue_link(tok, 'ip-hash-b', ua)->>'ok')::boolean, 'another ip continues';
+  assert (sendlinks.continue_link(tok, ip, 'AppleCoreMedia/1.0.0.22A3354 (iPhone; U; CPU OS 18_0 like Mac OS X; en_us)')->>'ok')::boolean, 'the iPhone media agent continues';
+  assert (sendlinks.continue_link(tok, null, null)->>'ok')::boolean, 'no ip or agent continues';
+  assert (select view_count from sendlinks.links where id = lid) = 1, 'still nothing spent';
   assert sendlinks.continue_link('x', ip, ua)->>'reason' = 'not_found', 'unknown token';
 
   -- A spent view older than 30 minutes no longer opens a continuation (events are append only,
   -- so the old open is inserted already old).
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"Old","bucket":"content-library","path":"guides/ai-readiness.pdf"}');
   insert into sendlinks.events (link_id, kind, ip_sha256, user_agent, at)
-  values (lid, 'opened', 'ip-hash-old', ua, now() - interval '31 minutes');
-  assert sendlinks.continue_link(tok, 'ip-hash-old', ua)->>'reason' = 'no_recent_view', 'an open 31 minutes ago is too old';
+  values ((r->>'link_id')::uuid, 'opened', 'ip-hash-old', ua, now() - interval '31 minutes');
+  assert sendlinks.continue_link(r->>'token', 'ip-hash-old', ua)->>'reason' = 'no_recent_view', 'an open 31 minutes ago is too old';
 
   -- Exhausted by real views: the second view is the last, and then nobody continues.
   perform sendlinks.open_link(tok, null, 'ip-hash-b', ua, true);
