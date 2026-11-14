@@ -1,0 +1,46 @@
+name: Closeout fold
+# A closeout note (now-notes/YYYY-MM-DD-<slug>.md) that reaches the default branch
+# is folded into NOW.md and removed, so pull requests never edit NOW.md at once
+# (Ruling, Krish, 2026-10-28). The fold is the harness's own code: the job runs
+# .claude/hooks/harness-closeout.mjs --fold only after proving the file is the
+# byte-for-byte copy from krishanraja/ai-harness (the same check as the fleet's
+# harness-repository-context.yml). Every attempt folds afresh from the newest
+# branch head, so another push landing first never leaves a conflicted NOW.md.
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fold:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: closeout-fold
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Fold closeout notes into NOW.md
+        run: |
+          set -uo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch --quiet origin "$GITHUB_REF_NAME" && git reset --quiet --hard "origin/$GITHUB_REF_NAME" || exit 1
+            if ! ls now-notes/*.md >/dev/null 2>&1; then echo "No closeout notes to fold."; exit 0; fi
+            echo "9d6d1ac460c0d45df9bbc7a10b6cd40badcee45d6fad9ee95d84139726cf8790  .claude/hooks/harness-closeout.mjs" | sha256sum --check --status || { echo "::error::.claude/hooks/harness-closeout.mjs is not the harness copy"; exit 1; }
+            status=0; node .claude/hooks/harness-closeout.mjs --fold || status=$?
+            if [ -z "$(git status --porcelain -- NOW.md now-notes)" ]; then exit "$status"; fi
+            git add -A -- NOW.md now-notes
+            git commit --quiet -m "docs(closeout): fold closeout notes into NOW.md" -m "Written by .claude/hooks/harness-closeout.mjs --fold, delivered from krishanraja/ai-harness."
+            if git push --quiet origin "HEAD:$GITHUB_REF_NAME"; then exit "$status"; fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::The branch kept moving; the notes stay in now-notes/ for the next push."
+          exit 1
