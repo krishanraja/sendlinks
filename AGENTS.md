@@ -14,7 +14,7 @@ SendLinks: expiring, revocable, view-limited links to a file, text or url, made 
 - SendLinks never emails or sends anything. Sending stays with the callers' own lanes and their approvals.
 - Every rule lives in a `sendlinks.*` SQL function; a schema change is a new migration in `supabase/migrations/`, applied to the Mindmaker OS project and read back from its migration history.
 - Krish's yes, immediately before, for each of: minting or revoking a bearer, changing a client's `ventures`, deleting uploads (the expired sweep), and changing a bucket's permission (`skill-deliveries`). `docs/STATE.md`, "Open items", lists the ones waiting.
-- The default branch is `claude/drive-folder-rebuild-e0suzz` (there is no `main`); making `main` the default is a repository setting, Krish's call.
+- `main` is the one branch (Krish, 2026-11-14: "can you consolidate them all in to a main and get rid of the branches?"). It holds every earlier branch's work. Work on a short-lived branch and merge it into `main` by pull request, and delete it once merged. The repository's default branch is a setting only Krish changes (Settings, General, Default branch).
 - No em dashes in anything new.
 
 ## Checks
