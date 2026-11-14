@@ -2,7 +2,7 @@
 
 The one current-truth file for SendLinks. Updated at every phase change.
 
-Updated: 2026-10-22
+Updated: 2026-11-14
 
 ## Outcome
 
@@ -12,16 +12,17 @@ protected and revoked. Every venture's agents are told this is how things reach 
 
 ## Phase
 
-Live on Mindmaker OS. Recipient page not started.
+Live on Mindmaker OS. Control Center is the main caller. Recipient page not started.
 
 | | status | evidence |
 |---|---|---|
 | Schema and SQL engine | live | migrations `20261022120252_sendlinks_core`, `20261022122402_sendlinks_receipts` in history (the hand-written duplicate row was deleted on Krish's approval); 4 tables, 16 functions; anon and authenticated cannot reach the schema or the 9 wrappers |
-| `sendlinks-api` v6, `sendlinks-open` v3 | live, verify_jwt off | live canary 2026-10-22: 20/20 JSON creates and 10/10 uploads 201 (slowest 5.1 s cold); read-once text 200 then 410; unfurler preview spends nothing; uploaded file streams back byte-identical; content-library file 2,055,849 bytes in 1.9 s |
+| `sendlinks-api` v7, `sendlinks-open` v4 | live, verify_jwt off | deployed 2026-10-22 from this code (Management API, read 2026-11-14); live canary 2026-10-22: 20/20 JSON creates and 10/10 uploads 201 (slowest 5.1 s cold); read-once text 200 then 410; unfurler preview spends nothing; uploaded file streams back byte-identical; content-library file 2,055,849 bytes in 1.9 s |
 | Receipts | live | canary link: opened and downloaded recorded, events `created`, `opened`, `downloaded` |
 | Receipt webhooks | live | pg_net delivered 4 POSTs for 2 canary links (open and download each) |
 | `sendlinks` bucket | live | private, 26214400 byte limit |
-| Bearers | `n8n`, all ventures | in Vault as `sendlinks_n8n_bearer`; proven by creating and revoking a Pulse link. Canary bearers revoked |
+| Bearers | `n8n` and `control-center`, both all ventures (`ventures` null) | `n8n`: in Vault as `sendlinks_n8n_bearer`; proven by creating and revoking a Pulse link. `control-center`: minted 2026-10-23, used by Control Center as `SENDLINKS_BEARER`; made its first file links 2026-11-13, last used 2026-11-14 (`sendlinks.clients`, read 2026-11-14). Canary bearers revoked |
+| Control Center caller | live | `api/_sendLinks.ts` creates asset links for growth-mindmake emails (venture `mindmake`); the harness connector tools `make_send_link` and `read_send_link` (`api/harness/_sendlinks-mcp.ts`) mint a file link and read its opens back. Same routes, fields and bearer as `sendlinks-api` |
 | n8n credential | live | `SendLinks` (httpHeaderAuth, id `SNBwrviRkkamYMfN`), restricted to `gojpffsrxybbpbdzzrvs.supabase.co`; bearer copied Vault to n8n without leaving the shell; listed back through the n8n MCP |
 | DEL-002 standard | active in `standards_registry`, scope all, pre-check | inferred: reaches agents in the next nightly digest (renderer `regenerate-standards-digest.py` on the VPS, not readable from here) |
 | Local tests | pass | `tests/run-local.sh`: 9 SQL suites, 20 HTTP steps; `deno check` and `deno lint` clean |
@@ -42,8 +43,18 @@ Live on Mindmaker OS. Recipient page not started.
 1. Rotate the n8n API key that was pasted into chat on 2026-10-22 (n8n Settings, API). It created
    the `SendLinks` credential and is no longer needed by SendLinks; the credential keeps working
    after rotation.
-2. Architecture doc entry in `krishanraja/control-center` (`## 4` table list, `## 20` changelog)
-   by pull request.
+2. Control Center's bearer is all ventures, while its code files every link under `mindmake`
+   (`api/_sendLinks.ts:33`). Narrowing it is a permission change and needs Krish's yes:
+   `update sendlinks.clients set ventures = '{mindmake}' where name = 'control-center'`, then one
+   `make_send_link` call to read it back.
+3. File links minted by `make_send_link` are not written to `growth_asset_links`, so Control
+   Center's 30-minute asset read does not pick up their opens; `read_send_link` reads them on
+   demand. The fix lives in `krishanraja/control-center` (audit finding lane5-1, 2026-11-14).
+4. Expired upload sweep and moving `skill-deliveries` behind SendLinks: each deletes files or
+   changes a bucket's permission, so each needs Krish's yes.
+
+Control Center documents this service in its own `docs/app/tools/links.md`; the architecture-doc
+item from 2026-10-22 is closed by that page.
 
 ## Next action
 
