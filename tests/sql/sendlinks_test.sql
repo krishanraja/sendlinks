@@ -349,3 +349,65 @@ begin
            where link_id = (r->>'link_id')::uuid and kind = 'sent') = 200, 'message id cut to 200';
   raise notice 'ok: sent marks';
 end $$;
+
+-- 2.6: the expired upload sweep. Only objects in the 'sendlinks' bucket whose every link has
+-- expired are picked. The dry run changes nothing; the real run records the sweep on each link
+-- and hands back the paths for the Storage API to remove (SQL cannot delete Storage objects).
+do $$
+declare
+  c    uuid := (select v from t where k = 'client');
+  r    jsonb;
+  s    jsonb;
+  dead uuid;
+  n0   bigint := (select count(*) from sendlinks.events);
+begin
+  insert into storage.objects (bucket_id, name, metadata) values
+    ('sendlinks', 'mindmake/2026-01/a/dead.pdf',     '{"size": 100, "mimetype": "application/pdf"}'),
+    ('sendlinks', 'mindmake/2026-01/b/mixed.pdf',    '{"size": 200, "mimetype": "application/pdf"}'),
+    ('sendlinks', 'mindmake/2026-01/c/revoked.pdf',  '{"size": 300, "mimetype": "application/pdf"}'),
+    ('sendlinks', 'mindmake/2026-01/d/orphan.pdf',   '{"size": 400, "mimetype": "application/pdf"}'),
+    ('content-library', 'old/expired-in-library.pdf','{"size": 500, "mimetype": "application/pdf"}');
+
+  -- dead.pdf: two links, both expired. Picked.
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"d1","bucket":"sendlinks","path":"mindmake/2026-01/a/dead.pdf"}');
+  dead := (r->>'link_id')::uuid;
+  update sendlinks.links set expires_at = now() - interval '2 days' where id = dead;
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"d2","bucket":"sendlinks","path":"mindmake/2026-01/a/dead.pdf"}');
+  perform sendlinks.revoke_link(c, (r->>'link_id')::uuid, 'test');
+  update sendlinks.links set expires_at = now() - interval '1 day' where id = (r->>'link_id')::uuid;
+  -- mixed.pdf: one expired link, one still active. Kept.
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"m1","bucket":"sendlinks","path":"mindmake/2026-01/b/mixed.pdf"}');
+  update sendlinks.links set expires_at = now() - interval '1 day' where id = (r->>'link_id')::uuid;
+  perform sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"m2","bucket":"sendlinks","path":"mindmake/2026-01/b/mixed.pdf"}');
+  -- revoked.pdf: revoked, but its expiry is still ahead. Kept until the expiry passes.
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"r1","bucket":"sendlinks","path":"mindmake/2026-01/c/revoked.pdf"}');
+  perform sendlinks.revoke_link(c, (r->>'link_id')::uuid, 'test');
+  -- orphan.pdf has no link at all: kept (not this sweep's call). The library file: never touched.
+  r := sendlinks.create_link(c, '{"venture":"mindmake","kind":"file","title":"lib","bucket":"content-library","path":"old/expired-in-library.pdf"}');
+  update sendlinks.links set expires_at = now() - interval '9 days' where id = (r->>'link_id')::uuid;
+  n0 := (select count(*) from sendlinks.events);
+
+  s := sendlinks.sweep_expired_uploads();
+  assert (s->>'dry_run')::boolean, 'dry run by default: ' || s;
+  assert (s->>'count')::int = 1 and (s->>'bytes')::bigint = 100, 'only dead.pdf: ' || s;
+  assert s->'paths' = '["mindmake/2026-01/a/dead.pdf"]'::jsonb, 'path list: ' || s;
+  assert (select count(*) from sendlinks.events) = n0, 'dry run writes nothing';
+  assert (select count(*) from sendlinks.links where swept_at is not null) = 0, 'dry run marks nothing';
+
+  s := sendlinks.sweep_expired_uploads(false);
+  assert not (s->>'dry_run')::boolean and (s->>'count')::int = 1, 'real run: ' || s;
+  assert (select count(*) from sendlinks.links where swept_at is not null) = 2, 'both links of dead.pdf marked';
+  assert (select count(*) from sendlinks.events where kind = 'upload_swept') = 2, 'one event per link';
+
+  -- Until the Storage API removes the object, a rerun lists it again but records nothing twice.
+  s := sendlinks.sweep_expired_uploads(false);
+  assert (s->>'count')::int = 1, 'still listed until removed';
+  assert (select count(*) from sendlinks.events where kind = 'upload_swept') = 2, 'no duplicate events';
+
+  -- After the Storage API removal (simulated), the sweep finds nothing.
+  delete from storage.objects where bucket_id = 'sendlinks' and name = 'mindmake/2026-01/a/dead.pdf';
+  assert (sendlinks.sweep_expired_uploads()->>'count')::int = 0, 'nothing left to sweep';
+  assert sendlinks.open_link((select 'x'))->>'reason' = 'not_found', 'opening still answers';
+  assert not has_function_privilege('anon', 'sendlinks.sweep_expired_uploads(boolean)', 'execute'), 'anon cannot sweep';
+  raise notice 'ok: expired upload sweep';
+end $$;
