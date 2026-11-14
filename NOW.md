@@ -26,6 +26,7 @@ Krish's engine: every file that reaches a customer goes as a tracked link (DEL-0
 
 <!-- north-star-state {"week_of":"2026-11-09","week_target":null,"current":null,"current_as_of":null,"current_source":null,"urgency":4,"urgency_reason":"no North Star of its own yet; Krish sets one"} --> **North Star number: U4, not measured.** sendlinks has no North Star of its own yet (`docs/NORTH_STAR.md`); Krish sets one.
 
+- closeout notes now fold into NOW.md on the default branch (.github/workflows/closeout-fold.yml runs the harness's own fold, after checking the hook is the ai-harness copy by sha256). (2026-11-14)
 - Live on Mindmaker OS: `sendlinks-api` v7 and `sendlinks-open` v6. Callers: Control Center (asset links in growth-mindmake emails, and the connector's `make_send_link` and `read_send_link`) and n8n (credential `SendLinks`). (2026-11-14)
 - Byte ranges are live: migration `20261114123717_sendlinks_ranges` applied (18 functions, 11 wrappers, none open to anon or signed-in users); `sendlinks-open` answers `206` with `Content-Range`. Not yet checked on a real phone. (2026-11-14)
 - The project address is out of the docs (named as `$SUPABASE_URL` / `$SUPABASE_PROJECT_REF`) and `scripts/check-no-secrets.sh` fails CI on a JWT, a key, a bearer, a project address or ref, or a Postgres URL (fleet audit I-01). Older commits still hold the address. (2026-11-14)
@@ -38,7 +39,7 @@ Krish's engine: every file that reaches a customer goes as a tracked link (DEL-0
 
 ## What is next and what is waiting on Krish
 
-- Next (2026-11-14): a live phone check of an mp4 link (inline playback, seeking, time to first frame) once an existing caller mints one, or Krish opens a real video link on an iPhone and an Android.
+- Next (2026-11-14): write each session's closeout as now-notes/YYYY-MM-DD-<slug>.md with Status:, Next: and the North Star check line, and let the fold place it.
 - Then: mock the recipient click-through page (branded per venture, password form, read receipts) for Krish's approval; it also stops mail scanners counting as opens.
 - Waiting on Krish (fleet decisions, batch 2): narrowing Control Center's bearer to the ventures it uses and revoking the unused n8n bearer; the expired upload sweep; making `skill-deliveries` private; making `main` the default branch.
 - North Star check (2026-11-14): holds.
