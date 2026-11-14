@@ -26,6 +26,11 @@ export function pgDb(dbUrl: string): Db & { end(): Promise<void> } {
     recordDownload: async (linkId, bytes, complete, ipSha256, userAgent) => {
       await sql`select public.sendlinks_record_download(${linkId}::uuid, ${bytes}, ${complete}, ${ipSha256}, ${userAgent})`;
     },
+    continueLink: async (token, ipSha256, userAgent) =>
+      (await one(sql`select public.sendlinks_continue_link(${token}, ${ipSha256}, ${userAgent}) as r`)) as Json,
+    recordRangeDownload: async (linkId, bytes, ipSha256, userAgent) => {
+      await sql`select public.sendlinks_record_range_download(${linkId}::uuid, ${bytes}, ${ipSha256}, ${userAgent})`;
+    },
     end: () => sql.end(),
   };
 }

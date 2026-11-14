@@ -13,11 +13,16 @@ export interface Db {
   openLink(token: string, password: string | null, ipSha256: string | null, userAgent: string | null, consume: boolean): Promise<Json>;
   refundView(linkId: string, detail: string): Promise<void>;
   recordDownload(linkId: string, bytes: number, complete: boolean, ipSha256: string | null, userAgent: string | null): Promise<void>;
+  // A later piece of a file for a viewer who spent a view in the last 30 minutes; spends nothing.
+  continueLink(token: string, ipSha256: string | null, userAgent: string | null): Promise<Json>;
+  // The last byte left in a range: one download per viewer per 30 minutes.
+  recordRangeDownload(linkId: string, bytes: number, ipSha256: string | null, userAgent: string | null): Promise<void>;
 }
 
 export interface Storage {
-  // A streaming GET of the object. Throws, or returns a non-2xx Response, when it cannot.
-  fetchObject(bucket: string, path: string): Promise<Response>;
+  // A streaming GET of the object, of one byte range when `range` is given (a 206 then).
+  // Throws, or returns a non-2xx Response, when it cannot.
+  fetchObject(bucket: string, path: string, range?: string): Promise<Response>;
   upload(bucket: string, path: string, bytes: Uint8Array, contentType: string): Promise<void>;
   remove(bucket: string, path: string): Promise<void>;
 }
@@ -226,7 +231,17 @@ const OPEN_ERRORS: Record<string, [number, string]> = {
   password_required: [401, "This link needs a password."],
   bad_password: [403, "That password is not right."],
   unavailable: [503, "This link could not be opened just now. Try again in a minute."],
+  no_recent_view: [403, "Open the link again to keep watching."],
 };
+
+// One range of bytes, `bytes=a-b`, `bytes=a-` or `bytes=-n`. Anything else (several ranges, a
+// malformed header) is ignored and the whole file is served, as before ranges existed.
+export function parseRange(header: string | null): { header: string; fromStart: boolean } | null {
+  const m = /^bytes=(\d*)-(\d*)$/.exec((header ?? "").trim());
+  if (!m || (m[1] === "" && m[2] === "")) return null;
+  if (m[1] !== "" && m[2] !== "" && Number(m[2]) < Number(m[1])) return null;
+  return { header: `bytes=${m[1]}-${m[2]}`, fromStart: m[1] !== "" && Number(m[1]) === 0 };
+}
 
 export function makeOpenHandler(deps: Deps, fnName = "sendlinks-open") {
   return async (req: Request): Promise<Response> => {
@@ -253,6 +268,25 @@ export function makeOpenHandler(deps: Deps, fnName = "sendlinks-open") {
       password = typeof body.password === "string" ? body.password : null;
     }
 
+    // A range is honoured on a plain GET only: a password link opens by POST and stays whole-file.
+    const range = req.method === "GET" && !preview ? parseRange(req.headers.get("range")) : null;
+
+    if (range && !range.fromStart) {
+      const c = await deps.db.continueLink(token, ipHash, ua);
+      if (c.ok) {
+        let upstream: Response;
+        try {
+          upstream = await deps.storage.fetchObject(String(c.bucket), String(c.path), range.header);
+          if (!upstream.ok || !upstream.body) throw new Error(`storage answered ${upstream.status}`);
+        } catch {
+          return fail("unavailable"); // nothing was spent, so nothing to give back
+        }
+        return streamFile(deps, c, upstream, ipHash, ua, true);
+      }
+      // Read-once, password and non-file links fall through to the open below, unchanged.
+      if (c.reason !== "whole_file_only") return fail(String(c.reason));
+    }
+
     const r = await deps.db.openLink(token, password, ipHash, ua, !preview);
     if (!r.ok) return fail(String(r.reason));
 
@@ -270,14 +304,16 @@ export function makeOpenHandler(deps: Deps, fnName = "sendlinks-open") {
     if (r.kind === "file") {
       // Files always stream through here, for GET and POST alike, so the last byte leaving is
       // what writes the download receipt.
+      // A read-once link is always the whole file, whatever the player asks for.
+      const ranged = range !== null && range.fromStart && Number(r.max_views) !== 1;
       let upstream: Response;
       try {
-        upstream = await deps.storage.fetchObject(String(r.bucket), String(r.path));
+        upstream = await deps.storage.fetchObject(String(r.bucket), String(r.path), ranged ? range!.header : undefined);
         if (!upstream.ok || !upstream.body) throw new Error(`storage answered ${upstream.status}`);
       } catch (e) {
         return refund(e);
       }
-      return streamFile(deps, r, upstream, ipHash, ua);
+      return streamFile(deps, r, upstream, ipHash, ua, Number(r.max_views) !== 1);
     }
 
     let target: string | null = null;
@@ -309,8 +345,16 @@ export function makeOpenHandler(deps: Deps, fnName = "sendlinks-open") {
   };
 }
 
-function streamFile(deps: Deps, r: Json, upstream: Response, ipHash: string | null, ua: string | null): Response {
+function streamFile(
+  deps: Deps, r: Json, upstream: Response, ipHash: string | null, ua: string | null, rangesAllowed: boolean,
+): Response {
   const linkId = String(r.link_id);
+  // A 206 from Storage: a piece of the file. Its receipt is written only when the piece ends on
+  // the file's last byte, once per viewer per 30 minutes; a piece cut off records nothing.
+  const contentRange = upstream.status === 206 ? upstream.headers.get("content-range") : null;
+  const cr = contentRange ? /^bytes (\d+)-(\d+)\/(\d+)$/.exec(contentRange) : null;
+  const partial = cr !== null;
+  const endsFile = cr !== null && Number(cr[2]) === Number(cr[3]) - 1;
   const contentType = String(r.content_type || upstream.headers.get("content-type") || "application/octet-stream");
   const fileName = String(r.file_name || "download");
   const length = upstream.headers.get("content-length");
@@ -320,8 +364,11 @@ function streamFile(deps: Deps, r: Json, upstream: Response, ipHash: string | nu
   const settle = (complete: boolean) => {
     if (settled) return;
     settled = true;
-    const write = deps.db.recordDownload(linkId, sent, complete, ipHash, ua).catch(() => {});
-    deps.waitUntil?.(write);
+    let write: Promise<void>;
+    if (!partial) write = deps.db.recordDownload(linkId, sent, complete, ipHash, ua);
+    else if (complete && endsFile) write = deps.db.recordRangeDownload(linkId, sent, ipHash, ua);
+    else return;
+    deps.waitUntil?.(write.catch(() => {}));
   };
 
   const body = new ReadableStream<Uint8Array>({
@@ -357,5 +404,7 @@ function streamFile(deps: Deps, r: Json, upstream: Response, ipHash: string | nu
     headers["Content-Security-Policy"] = "sandbox; default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'";
   }
   if (length) headers["Content-Length"] = length;
-  return new Response(body, { status: 200, headers });
+  if (rangesAllowed) headers["Accept-Ranges"] = "bytes";
+  if (partial) headers["Content-Range"] = contentRange!;
+  return new Response(body, { status: partial ? 206 : 200, headers });
 }

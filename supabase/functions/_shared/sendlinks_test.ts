@@ -22,10 +22,21 @@ Deno.test({
       ["content-library/guides/ai-readiness.pdf", new TextEncoder().encode("%PDF-1.7 guide")],
     ]);
     const storage: Storage = {
-      fetchObject(b, p) {
+      fetchObject(b, p, range) {
         if (storageDown) return Promise.reject(new Error("storage unavailable"));
         const bytes = objects.get(`${b}/${p}`);
-        return Promise.resolve(bytes ? new Response(bytes.slice(), { headers: { "content-length": String(bytes.length) } }) : new Response("missing", { status: 404 }));
+        if (!bytes) return Promise.resolve(new Response("missing", { status: 404 }));
+        const m = range ? /^bytes=(\d*)-(\d*)$/.exec(range) : null;
+        if (!m) return Promise.resolve(new Response(bytes.slice(), { headers: { "content-length": String(bytes.length) } }));
+        // Storage's own range answer: a 206 with Content-Range, as S3 and Supabase Storage give.
+        const n = bytes.length;
+        const start = m[1] === "" ? n - Number(m[2]) : Number(m[1]);
+        const end = m[1] === "" || m[2] === "" ? n - 1 : Math.min(Number(m[2]), n - 1);
+        const piece = bytes.slice(start, end + 1);
+        return Promise.resolve(new Response(piece, {
+          status: 206,
+          headers: { "content-length": String(piece.length), "content-range": `bytes ${start}-${end}/${n}` },
+        }));
       },
       async upload(b, p, bytes, ct) {
         objects.set(`${b}/${p}`, new Uint8Array(bytes));
@@ -252,6 +263,73 @@ Deno.test({
       const s = await status(link_id);
       assertEquals([s.receipts.opened, s.receipts.downloaded], [true, false]);
       assertEquals(s.events[0].kind, "download_incomplete");
+    });
+
+    await t.step("a video plays in pieces: the first piece spends a view, later ones only for that viewer", async () => {
+      const video = new Uint8Array(4096).map((_, i) => i % 251);
+      const form = new FormData();
+      form.append("meta", JSON.stringify({ venture: "mindmake", title: "Cut", max_views: 3 }));
+      form.append("file", new File([video], "cut.mp4", { type: "video/mp4" }));
+      const { url, link_id } = await (await api(new Request(`${BASE}/sendlinks-api/links`, { method: "POST", headers: auth, body: form }))).json();
+      const phone = { "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)", "x-forwarded-for": "198.51.100.7" };
+
+      const first = await visit(url, { headers: { ...phone, range: "bytes=0-99" } });
+      assertEquals(first.status, 206);
+      assertEquals(first.headers.get("accept-ranges"), "bytes");
+      assertEquals(first.headers.get("content-range"), "bytes 0-99/4096");
+      assertEquals(first.headers.get("content-disposition"), 'inline; filename="cut.mp4"');
+      assertEquals((await first.arrayBuffer()).byteLength, 100);
+      await settled();
+      let s = await status(link_id);
+      assertEquals([s.views, s.receipts.downloaded], [1, false]);
+
+      const seek = await visit(url, { headers: { ...phone, range: "bytes=2048-" } });
+      assertEquals(seek.status, 206);
+      assertEquals(seek.headers.get("content-range"), "bytes 2048-4095/4096");
+      assertEquals(new Uint8Array(await seek.arrayBuffer()), video.slice(2048));
+      await settled();
+      const again = await visit(url, { headers: { ...phone, range: "bytes=4000-" } });
+      await again.arrayBuffer();
+      await settled();
+      s = await status(link_id);
+      assertEquals([s.views, s.receipts.downloads], [1, 1]);
+
+      const otherIp = await visit(url, { headers: { ...phone, "x-forwarded-for": "198.51.100.8", range: "bytes=2048-" } });
+      assertEquals(otherIp.status, 403);
+      await otherIp.body?.cancel();
+      const otherAgent = await visit(url, { headers: { ...phone, "user-agent": "Mozilla/5.0 (Linux; Android 15; Pixel 9)", range: "bytes=2048-" } });
+      assertEquals(otherAgent.status, 403);
+      await otherAgent.body?.cancel();
+      s = await status(link_id);
+      assertEquals(s.views, 1);
+    });
+
+    await t.step("a read-once file ignores ranges: whole file, one spend, then gone", async () => {
+      const form = new FormData();
+      form.append("meta", JSON.stringify({ venture: "mindmake", title: "Once", max_views: 1 }));
+      form.append("file", new File([new Uint8Array(1000)], "once.mp4", { type: "video/mp4" }));
+      const { url, link_id } = await (await api(new Request(`${BASE}/sendlinks-api/links`, { method: "POST", headers: auth, body: form }))).json();
+      const go = await visit(url, { headers: { range: "bytes=0-99" } });
+      assertEquals(go.status, 200);
+      assertEquals(go.headers.get("accept-ranges"), null);
+      assertEquals((await go.arrayBuffer()).byteLength, 1000);
+      await settled();
+      const more = await visit(url, { headers: { range: "bytes=100-" } });
+      assertEquals(more.status, 410);
+      await more.body?.cancel();
+      const s = await status(link_id);
+      assertEquals([s.views, s.receipts.downloads], [1, 1]);
+    });
+
+    await t.step("a malformed or multi-part range is served as the whole file", async () => {
+      const res = await post("/links", { venture: "mindmake", kind: "file", title: "Guide", bucket: "content-library", path: "guides/ai-readiness.pdf" });
+      const { url } = await res.json();
+      for (const range of ["bytes=0-9,20-29", "lines=1-2", "bytes=9-3"]) {
+        const go = await visit(url, { headers: { range } });
+        assertEquals(go.status, 200);
+        assertEquals(new TextDecoder().decode(await go.arrayBuffer()), "%PDF-1.7 guide");
+      }
+      await settled();
     });
 
     await t.step("non-inline files download as attachments inside a sandbox", async () => {

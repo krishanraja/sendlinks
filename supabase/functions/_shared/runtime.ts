@@ -44,16 +44,26 @@ export function restDb(supabaseUrl: string, serviceKey: string): Db {
         p_link_id: linkId, p_bytes: bytes, p_complete: complete, p_ip_sha256: ipSha256, p_user_agent: userAgent,
       });
     },
+    continueLink: (token, ipSha256, userAgent) =>
+      rpc("continue_link", { p_token: token, p_ip_sha256: ipSha256, p_user_agent: userAgent }),
+    recordRangeDownload: async (linkId, bytes, ipSha256, userAgent) => {
+      await rpc("record_range_download", {
+        p_link_id: linkId, p_bytes: bytes, p_ip_sha256: ipSha256, p_user_agent: userAgent,
+      });
+    },
   };
 }
 
 export function supabaseStorage(url: string, serviceKey: string): Storage {
   const sb = createClient(url, serviceKey, { auth: { persistSession: false } });
   return {
-    async fetchObject(bucket, path) {
+    async fetchObject(bucket, path, range) {
       const { data, error } = await sb.storage.from(bucket).createSignedUrl(path, 60);
       if (error || !data) throw new Error(`signed url failed: ${error?.message}`);
-      return fetch(data.signedUrl, { signal: AbortSignal.timeout(30_000) });
+      return fetch(data.signedUrl, {
+        headers: range ? { Range: range } : {},
+        signal: AbortSignal.timeout(30_000),
+      });
     },
     async upload(bucket, path, bytes, contentType) {
       const { error } = await sb.storage.from(bucket).upload(path, bytes, { contentType, upsert: false });
