@@ -30,7 +30,9 @@ and their approvals; SendLinks never emails anyone.
 
 ## API
 
-Base: `https://gojpffsrxybbpbdzzrvs.supabase.co/functions/v1/sendlinks-api`
+Base: `$SUPABASE_URL/functions/v1/sendlinks-api`, where `SUPABASE_URL` is the Mindmaker OS project's
+address, held in the caller's environment (Control Center and n8n each have it). It is never written
+in this public repository.
 Auth: `Authorization: Bearer sl_...` (one bearer per caller, see docs/DEPLOY.md).
 
 ### Create a link: `POST /links`
