@@ -1,0 +1,39 @@
+# Weekly branch sweep. Copied byte for byte into every repository of the fleet (krishanraja/*);
+# the canonical copy is krishanraja/ai-harness .github/workflows/branch-sweep.yml with
+# .github/scripts/branch_sweep.py. Change it there first, then copy it everywhere unchanged.
+# Ruling (Krish, 2026-11-15): branches whose work is already on main are deleted now and weekly;
+# branches with unmerged work or open pull requests are kept and listed.
+name: Branch sweep
+
+on:
+  schedule:
+    - cron: '17 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List what would be deleted without deleting anything
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: branch-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - name: Delete branches whose work is already on the default branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+        run: python3 .github/scripts/branch_sweep.py
