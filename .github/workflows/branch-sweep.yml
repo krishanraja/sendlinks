@@ -3,6 +3,8 @@
 # .github/scripts/branch_sweep.py. Change it there first, then copy it everywhere unchanged.
 # Ruling (Krish, 2026-11-15): branches whose work is already on main are deleted now and weekly;
 # branches with unmerged work or open pull requests are kept and listed.
+# Ruling (Krish, 2026-11-15): the stranded branches he approved are deleted, each only at the exact
+# commit reviewed (the `approved` input).
 name: Branch sweep
 
 on:
@@ -14,6 +16,10 @@ on:
         description: List what would be deleted without deleting anything
         type: boolean
         default: true
+      approved:
+        description: Approved mode. Branches to delete as branch@sha, separated by spaces or newlines; each is deleted only at that exact commit, and no weekly sweep runs
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -36,4 +42,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+          APPROVED: ${{ github.event_name == 'workflow_dispatch' && inputs.approved || '' }}
         run: python3 .github/scripts/branch_sweep.py
