@@ -1,7 +1,7 @@
 ---
 repo: krishanraja/sendlinks
 product: SendLinks
-as_of: 2026-11-14
+as_of: 2026-11-15
 head: 11454a8
 lifecycle: live
 production_url: none (two Supabase edge functions on the Mindmaker OS project)
@@ -22,10 +22,11 @@ Expiring, revocable, view-limited links to a file, text or url, made by the engi
 
 Krish's engine: every file that reaches a customer goes as a tracked link (DEL-002), so Control Center knows who opened what was sent.
 
-## Where it is right now (as of 2026-11-14)
+## Where it is right now (as of 2026-11-15)
 
 <!-- north-star-state {"week_of":"2026-11-09","week_target":null,"current":null,"current_as_of":null,"current_source":null,"urgency":4,"urgency_reason":"no North Star of its own yet; Krish sets one"} --> **North Star number: U4, not measured.** sendlinks has no North Star of its own yet (`docs/NORTH_STAR.md`); Krish sets one.
 
+- A weekly branch sweep (`.github/workflows/branch-sweep.yml`, Sunday 03:17 UTC, and by hand) deletes every remote branch whose work is already on main and lists each branch it keeps with why: unmerged work, an open pull request, protected (Ruling, Krish, 2026-11-15). The script is `.github/scripts/branch_sweep.py`, copied unchanged from ai-harness, which holds the canonical copy. (2026-11-15)
 - The recipient page is live at `mindmake.co/l/<link>` (mindmake PR #300) and `SENDLINKS_PUBLIC_BASE` points new links at it; a fresh `make_send_link` link comes out on mindmake.co, its page load spends no view, and on production the video plays after Play with no errors. (2026-11-14)
 - The recipient page is built from the approved mock (`web/recipient/`, PR #16) and its card endpoint is live (`sendlinks-open` v8, migration `20261114191454_sendlinks_link_card`); in an emulated Pixel 7 against the live link the card loads and the video plays inside the page. It is not hosted yet. (2026-11-14)
 - Krish's Android still showed a broken video after the range fix. Cause: the `sandbox` CSP gave Chrome's video page origin 'null', so the player's fetch of the file was blocked as cross-origin. Video and audio now go without the sandbox (`sendlinks-open` v7); emulated Android Chrome on the live link loads, seeks and reaches ready state with no error. (2026-11-14)
@@ -46,7 +47,7 @@ Krish's engine: every file that reaches a customer goes as a tracked link (DEL-0
 
 ## What is next and what is waiting on Krish
 
-- Next (2026-11-14): Krish opens the fresh page-check link on his phone and presses Play.
+- Next (2026-11-15): Krish opens the fresh page-check link on his phone and presses Play.
 - Then: mock the recipient click-through page (branded per venture, password form, read receipts) for Krish's approval; it also stops mail scanners counting as opens.
 - Waiting on Krish (fleet decisions, batch 2): narrowing Control Center's bearer to the ventures it uses and revoking the unused n8n bearer; the expired upload sweep; making `skill-deliveries` private; making `main` the default branch.
-- North Star check (2026-11-14): holds.
+- North Star check (2026-11-15): holds.
